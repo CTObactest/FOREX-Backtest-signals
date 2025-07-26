@@ -64,22 +64,23 @@ class BroadcastBot:
         self.save_data()
         
         if self.is_admin(user_id):
-            await update.message.reply_text(
-                "🔧 *Admin Panel*\n\n"
+            message = (
+                "🔧 Admin Panel\n\n"
                 "Available commands:\n"
                 "/broadcast - Start broadcasting a message\n"
                 "/add <user_id> - Add user to subscribers\n"
                 "/stats - View bot statistics\n"
                 "/subscribers - List all subscribers\n"
-                "/help - Show this help message",
-                parse_mode='Markdown'
+                "/help - Show this help message"
             )
+            await update.message.reply_text(message)
         else:
-            await update.message.reply_text(
+            message = (
                 "👋 Welcome to the Broadcast Bot!\n\n"
                 "You'll receive important updates and announcements here.\n"
                 "Type /subscribe to get notified of broadcasts."
             )
+            await update.message.reply_text(message)
     
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /help command"""
@@ -134,12 +135,12 @@ class BroadcastBot:
             return
         
         stats_text = (
-            f"📊 *Bot Statistics*\n\n"
+            f"📊 Bot Statistics\n\n"
             f"👥 Total Users: {len(self.all_users)}\n"
             f"🔔 Subscribers: {len(self.subscribers)}\n"
             f"🔕 Non-subscribers: {len(self.all_users - self.subscribers)}"
         )
-        await update.message.reply_text(stats_text, parse_mode='Markdown')
+        await update.message.reply_text(stats_text)
     
     async def list_subscribers(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /subscribers command - Admin only"""
@@ -152,16 +153,16 @@ class BroadcastBot:
             return
         
         subscribers_list = "\n".join([f"• {sub_id}" for sub_id in sorted(self.subscribers)])
-        message = f"📝 *Subscribers List* ({len(self.subscribers)} total):\n\n{subscribers_list}"
+        message = f"📝 Subscribers List ({len(self.subscribers)} total):\n\n{subscribers_list}"
         
         # Telegram has a message length limit, so split if too long
         if len(message) > 4000:
             chunks = [subscribers_list[i:i+3500] for i in range(0, len(subscribers_list), 3500)]
-            await update.message.reply_text(f"📝 *Subscribers List* ({len(self.subscribers)} total):", parse_mode='Markdown')
+            await update.message.reply_text(f"📝 Subscribers List ({len(self.subscribers)} total):")
             for chunk in chunks:
                 await update.message.reply_text(chunk)
         else:
-            await update.message.reply_text(message, parse_mode='Markdown')
+            await update.message.reply_text(message)
     
     async def start_broadcast(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Start broadcast conversation - Admin only"""
@@ -169,13 +170,13 @@ class BroadcastBot:
             await update.message.reply_text("❌ You don't have permission to use this command.")
             return ConversationHandler.END
         
-        await update.message.reply_text(
-            "📝 *Start Broadcasting*\n\n"
+        message = (
+            "📝 Start Broadcasting\n\n"
             "Please send me the message you want to broadcast.\n"
             "You can send text, photos, videos, or documents.\n\n"
-            "Send /cancel to cancel this operation.",
-            parse_mode='Markdown'
+            "Send /cancel to cancel this operation."
         )
+        await update.message.reply_text(message)
         return WAITING_MESSAGE
     
     async def receive_broadcast_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -202,17 +203,17 @@ class BroadcastBot:
         await query.answer()
         
         if query.data == "add_buttons":
-            await query.edit_message_text(
-                "🔘 *Adding Inline Buttons*\n\n"
+            message = (
+                "🔘 Adding Inline Buttons\n\n"
                 "Send button configurations in this format:\n"
-                "`Button Text 1|URL1`\n"
-                "`Button Text 2|URL2`\n\n"
+                "Button Text 1|URL1\n"
+                "Button Text 2|URL2\n\n"
                 "Example:\n"
-                "`Visit Website|https://example.com`\n"
-                "`Join Channel|https://t.me/channel`\n\n"
-                "Send /skip to continue without buttons.",
-                parse_mode='Markdown'
+                "Visit Website|https://example.com\n"
+                "Join Channel|https://t.me/channel\n\n"
+                "Send /skip to continue without buttons."
             )
+            await query.edit_message_text(message)
             return WAITING_BUTTONS
         else:
             context.user_data['inline_buttons'] = None
@@ -258,19 +259,13 @@ class BroadcastBot:
             f"🔕 Non-subscribers: {len(self.all_users - self.subscribers)}"
         )
         
+        message = f"🎯 Choose Target Audience\n\n{stats_text}\n\nWho should receive this broadcast?"
+        
         # Use appropriate method based on whether this is a callback or message
         if hasattr(update, 'callback_query') and update.callback_query:
-            await update.callback_query.message.reply_text(
-                f"🎯 *Choose Target Audience*\n\n{stats_text}\n\nWho should receive this broadcast?",
-                reply_markup=reply_markup,
-                parse_mode='Markdown'
-            )
+            await update.callback_query.message.reply_text(message, reply_markup=reply_markup)
         else:
-            await update.message.reply_text(
-                f"🎯 *Choose Target Audience*\n\n{stats_text}\n\nWho should receive this broadcast?",
-                reply_markup=reply_markup,
-                parse_mode='Markdown'
-            )
+            await update.message.reply_text(message, reply_markup=reply_markup)
         
         return WAITING_TARGET
     
@@ -295,11 +290,12 @@ class BroadcastBot:
             return ConversationHandler.END
         
         # Start broadcasting
-        await query.edit_message_text(
-            f"📡 *Broadcasting to {audience_name}*\n\n"
+        message = (
+            f"📡 Broadcasting to {audience_name}\n\n"
             f"Sending to {len(target_users)} users...\n"
             f"This may take a few moments."
         )
+        await query.edit_message_text(message)
         
         broadcast_message = context.user_data['broadcast_message']
         inline_buttons = context.user_data.get('inline_buttons')
@@ -314,8 +310,7 @@ class BroadcastBot:
                     await context.bot.send_message(
                         chat_id=user_id,
                         text=broadcast_message.text,
-                        reply_markup=inline_buttons,
-                        parse_mode=broadcast_message.parse_entities() and 'Markdown' or None
+                        reply_markup=inline_buttons
                     )
                 elif broadcast_message.photo:
                     await context.bot.send_photo(
@@ -353,8 +348,8 @@ class BroadcastBot:
         
         # Send summary
         summary = (
-            f"✅ *Broadcast Complete!*\n\n"
-            f"📊 **Results:**\n"
+            f"✅ Broadcast Complete!\n\n"
+            f"📊 Results:\n"
             f"• Target: {audience_name}\n"
             f"• Successfully sent: {success_count}\n"
             f"• Failed: {failed_count}\n"
@@ -363,8 +358,7 @@ class BroadcastBot:
         
         await context.bot.send_message(
             chat_id=query.from_user.id,
-            text=summary,
-            parse_mode='Markdown'
+            text=summary
         )
         
         return ConversationHandler.END
@@ -373,6 +367,21 @@ class BroadcastBot:
         """Cancel broadcast operation"""
         await update.message.reply_text("❌ Broadcast operation cancelled.")
         return ConversationHandler.END
+    
+    async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle errors"""
+        logger.error(f"Update {update} caused error {context.error}")
+        
+        # Try to notify the user about the error
+        if update and update.effective_chat:
+            try:
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text="❌ Sorry, an error occurred while processing your request. Please try again."
+                )
+            except Exception:
+                # If we can't send a message, just log it
+                logger.error("Could not send error message to user")
     
     def create_application(self):
         """Create and configure the application"""
@@ -405,6 +414,9 @@ class BroadcastBot:
         application.add_handler(CommandHandler("stats", self.stats))
         application.add_handler(CommandHandler("subscribers", self.list_subscribers))
         application.add_handler(broadcast_handler)
+        
+        # Add error handler
+        application.add_error_handler(self.error_handler)
         
         return application
 
