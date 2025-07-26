@@ -1,7 +1,10 @@
 import os
 import json
 import logging
+import asyncio
 from typing import Dict, List, Optional
+from aiohttp import web
+import threading
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, 
@@ -444,6 +447,41 @@ class BroadcastBot:
                 # If we can't send a message, just log it
                 logger.error("Could not send error message to user")
     
+    def create_health_server(self, port: int):
+        """Create a simple health check server"""
+        async def health_check(request):
+            return web.Response(text="OK", status=200)
+        
+        async def root_handler(request):
+            return web.Response(text="Telegram Bot is running", status=200)
+        
+        app = web.Application()
+        app.router.add_get('/health', health_check)
+        app.router.add_get('/', root_handler)
+        
+        return app
+    
+    def run_health_server(self, port: int):
+        """Run the health check server in a separate thread"""
+        async def start_server():
+            app = self.create_health_server(port)
+            runner = web.AppRunner(app)
+            await runner.setup()
+            site = web.TCPSite(runner, '0.0.0.0', port)
+            await site.start()
+            logger.info(f"Health check server started on port {port}")
+            
+            # Keep the server running
+            while True:
+                await asyncio.sleep(1)
+        
+        def run_in_thread():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(start_server())
+        
+        thread = threading.Thread(target=run_in_thread, daemon=True)
+        thread.start()
     def create_application(self):
         """Create and configure the application"""
         application = Application.builder().token(self.token).build()
@@ -501,7 +539,7 @@ def main():
     except ValueError:
         raise ValueError("ADMIN_IDS must be comma-separated list of integers")
     
-    # Create and run bot
+    # Create bot
     bot = BroadcastBot(BOT_TOKEN, admin_ids)
     application = bot.create_application()
     
@@ -509,9 +547,17 @@ def main():
     port = int(os.getenv('PORT', 8000))
     
     logger.info(f"Starting bot with {len(admin_ids)} admin(s)")
-    logger.info(f"Bot will run on port {port}")
+    logger.info(f"Health server will run on port {port}")
     
-    # Run the bot
+    # Start health check server
+    bot.run_health_server(port)
+    
+    # Small delay to ensure health server starts
+    import time
+    time.sleep(2)
+    
+    # Run the bot (this will block)
+    logger.info("Starting Telegram bot polling...")
     application.run_polling()
 
 if __name__ == '__main__':
