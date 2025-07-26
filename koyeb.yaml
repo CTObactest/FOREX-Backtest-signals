@@ -1,0 +1,22 @@
+name: telegram-broadcast-bot
+services:
+  - name: broadcast-bot
+    type: web
+    build:
+      type: dockerfile
+    instance_type: nano
+    ports:
+      - port: 8000
+        protocol: http
+    env:
+      - name: BOT_TOKEN
+        value: "YOUR_BOT_TOKEN_HERE"
+      - name: ADMIN_IDS
+        value: "YOUR_ADMIN_ID_1,YOUR_ADMIN_ID_2"
+      - name: PORT
+        value: "8000"
+    regions:
+      - was  # Washington
+    scaling:
+      min: 1
+      max: 1
