@@ -81,7 +81,7 @@ class BroadcastBot:
             message = (
                 "👋 Welcome to PipSage — wise signals, steady gains!\n\n"
                 "You'll get curated trade signals and VIP updates here.\n"
-                "Type /subscribe to get notified of broadcasts."
+                "Enable notifications to get notified of broadcasts."
             )
             await update.message.reply_text(message)
     
