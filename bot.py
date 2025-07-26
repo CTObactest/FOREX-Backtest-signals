@@ -76,8 +76,8 @@ class BroadcastBot:
             await update.message.reply_text(message)
         else:
             message = (
-                "👋 Welcome to the Broadcast Bot!\n\n"
-                "You'll receive important updates and announcements here.\n"
+                "👋 Welcome to PipSage — wise signals, steady gains!\n\n"
+                "You'll get curated trade signals and VIP updates here.\n"
                 "Type /subscribe to get notified of broadcasts."
             )
             await update.message.reply_text(message)
