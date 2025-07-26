@@ -21,7 +21,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Conversation states
-WAITING_MESSAGE, WAITING_BUTTONS, WAITING_TARGET = range(3)
+WAITING_MESSAGE, WAITING_BUTTONS, WAITING_PROTECTION, WAITING_TARGET = range(4)
 
 class BroadcastBot:
     def __init__(self, token: str, admin_ids: List[int]):
@@ -217,7 +217,7 @@ class BroadcastBot:
             return WAITING_BUTTONS
         else:
             context.user_data['inline_buttons'] = None
-            return await self.ask_target_audience(update, context)
+            return await self.ask_message_protection(update, context)
     
     async def receive_buttons(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Receive button configuration"""
@@ -241,6 +241,52 @@ class BroadcastBot:
             except Exception as e:
                 await update.message.reply_text(f"❌ Error parsing buttons: {e}\nContinuing without buttons.")
                 context.user_data['inline_buttons'] = None
+        
+        return await self.ask_message_protection(update, context)
+    
+    async def ask_message_protection(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Ask about message protection settings"""
+        keyboard = [
+            [InlineKeyboardButton("🔒 Protect Message (No forwarding/sharing)", callback_data="protect_yes")],
+            [InlineKeyboardButton("🔓 Allow Forwarding/Sharing", callback_data="protect_no")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        message = (
+            "🛡️ Message Protection Settings\n\n"
+            "Choose protection level for your broadcast:\n\n"
+            "🔒 **Protect Message**: Prevents forwarding, copying, and sharing\n"
+            "• Recipients cannot forward the message\n"
+            "• Text cannot be selected/copied\n"
+            "• Screenshots are restricted (in some clients)\n\n"
+            "🔓 **Allow Forwarding**: Normal message behavior\n"
+            "• Recipients can forward and share\n"
+            "• Text can be copied\n"
+            "• No restrictions"
+        )
+        
+        # Use appropriate method based on whether this is a callback or message
+        if hasattr(update, 'callback_query') and update.callback_query:
+            await update.callback_query.message.reply_text(message, reply_markup=reply_markup, parse_mode='Markdown')
+        else:
+            await update.message.reply_text(message, reply_markup=reply_markup, parse_mode='Markdown')
+        
+        return WAITING_PROTECTION
+    
+    async def handle_protection_choice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle message protection choice"""
+        query = update.callback_query
+        await query.answer()
+        
+        # Store protection setting
+        if query.data == "protect_yes":
+            context.user_data['protect_content'] = True
+            protection_status = "🔒 Message will be protected (no forwarding/sharing)"
+        else:
+            context.user_data['protect_content'] = False
+            protection_status = "🔓 Message will allow forwarding/sharing"
+        
+        await query.edit_message_text(f"✅ {protection_status}")
         
         return await self.ask_target_audience(update, context)
     
@@ -289,56 +335,69 @@ class BroadcastBot:
             await query.edit_message_text(f"❌ No {audience_name.lower()} found to send the broadcast to.")
             return ConversationHandler.END
         
+        # Get broadcast settings
+        broadcast_message = context.user_data['broadcast_message']
+        inline_buttons = context.user_data.get('inline_buttons')
+        protect_content = context.user_data.get('protect_content', False)
+        
+        protection_status = "🔒 Protected" if protect_content else "🔓 Unprotected"
+        
         # Start broadcasting
         message = (
             f"📡 Broadcasting to {audience_name}\n\n"
-            f"Sending to {len(target_users)} users...\n"
+            f"Settings:\n"
+            f"• Target: {audience_name} ({len(target_users)} users)\n"
+            f"• Protection: {protection_status}\n"
+            f"• Buttons: {'Yes' if inline_buttons else 'No'}\n\n"
+            f"Sending messages...\n"
             f"This may take a few moments."
         )
         await query.edit_message_text(message)
-        
-        broadcast_message = context.user_data['broadcast_message']
-        inline_buttons = context.user_data.get('inline_buttons')
         
         success_count = 0
         failed_count = 0
         
         for user_id in target_users:
             try:
-                # Handle different message types
+                # Handle different message types with protection
                 if broadcast_message.text:
                     await context.bot.send_message(
                         chat_id=user_id,
                         text=broadcast_message.text,
-                        reply_markup=inline_buttons
+                        reply_markup=inline_buttons,
+                        protect_content=protect_content
                     )
                 elif broadcast_message.photo:
                     await context.bot.send_photo(
                         chat_id=user_id,
                         photo=broadcast_message.photo[-1].file_id,
                         caption=broadcast_message.caption,
-                        reply_markup=inline_buttons
+                        reply_markup=inline_buttons,
+                        protect_content=protect_content
                     )
                 elif broadcast_message.video:
                     await context.bot.send_video(
                         chat_id=user_id,
                         video=broadcast_message.video.file_id,
                         caption=broadcast_message.caption,
-                        reply_markup=inline_buttons
+                        reply_markup=inline_buttons,
+                        protect_content=protect_content
                     )
                 elif broadcast_message.document:
                     await context.bot.send_document(
                         chat_id=user_id,
                         document=broadcast_message.document.file_id,
                         caption=broadcast_message.caption,
-                        reply_markup=inline_buttons
+                        reply_markup=inline_buttons,
+                        protect_content=protect_content
                     )
                 elif broadcast_message.audio:
                     await context.bot.send_audio(
                         chat_id=user_id,
                         audio=broadcast_message.audio.file_id,
                         caption=broadcast_message.caption,
-                        reply_markup=inline_buttons
+                        reply_markup=inline_buttons,
+                        protect_content=protect_content
                     )
                 
                 success_count += 1
@@ -347,10 +406,12 @@ class BroadcastBot:
                 failed_count += 1
         
         # Send summary
+        protection_summary = "🔒 Protected (No forwarding/sharing)" if protect_content else "🔓 Unprotected (Forwarding allowed)"
         summary = (
             f"✅ Broadcast Complete!\n\n"
             f"📊 Results:\n"
             f"• Target: {audience_name}\n"
+            f"• Protection: {protection_summary}\n"
             f"• Successfully sent: {success_count}\n"
             f"• Failed: {failed_count}\n"
             f"• Total attempted: {len(target_users)}"
@@ -397,6 +458,9 @@ class BroadcastBot:
                 WAITING_BUTTONS: [
                     CallbackQueryHandler(self.handle_buttons_choice, pattern="^(add_buttons|skip_buttons)$"),
                     MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_buttons)
+                ],
+                WAITING_PROTECTION: [
+                    CallbackQueryHandler(self.handle_protection_choice, pattern="^protect_")
                 ],
                 WAITING_TARGET: [
                     CallbackQueryHandler(self.handle_target_choice, pattern="^target_")
