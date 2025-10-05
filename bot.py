@@ -1,5 +1,4 @@
 import os
-import json
 import logging
 import asyncio
 from typing import Dict, List, Optional
@@ -15,6 +14,8 @@ from telegram.ext import (
     filters,
     ContextTypes
 )
+from pymongo import MongoClient
+from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
 
 # Enable logging
 logging.basicConfig(
@@ -26,35 +27,146 @@ logger = logging.getLogger(__name__)
 # Conversation states
 WAITING_MESSAGE, WAITING_BUTTONS, WAITING_PROTECTION, WAITING_TARGET = range(4)
 
+class MongoDBHandler:
+    """Handle all MongoDB operations"""
+    
+    def __init__(self, connection_string: str):
+        self.connection_string = connection_string
+        self.client = None
+        self.db = None
+        self.users_collection = None
+        self.subscribers_collection = None
+        self.connect()
+    
+    def connect(self):
+        """Connect to MongoDB"""
+        try:
+            self.client = MongoClient(
+                self.connection_string,
+                serverSelectionTimeoutMS=5000,
+                connectTimeoutMS=10000,
+                socketTimeoutMS=10000
+            )
+            # Test the connection
+            self.client.admin.command('ping')
+            self.db = self.client['telegram_bot']
+            self.users_collection = self.db['users']
+            self.subscribers_collection = self.db['subscribers']
+            
+            # Create indexes for better performance
+            self.users_collection.create_index('user_id', unique=True)
+            self.subscribers_collection.create_index('user_id', unique=True)
+            
+            logger.info("Successfully connected to MongoDB")
+        except (ConnectionFailure, ServerSelectionTimeoutError) as e:
+            logger.error(f"Failed to connect to MongoDB: {e}")
+            raise
+    
+    def add_user(self, user_id: int, username: str = None, first_name: str = None):
+        """Add or update a user"""
+        try:
+            self.users_collection.update_one(
+                {'user_id': user_id},
+                {
+                    '$set': {
+                        'user_id': user_id,
+                        'username': username,
+                        'first_name': first_name,
+                        'last_interaction': asyncio.get_event_loop().time()
+                    },
+                    '$setOnInsert': {'created_at': asyncio.get_event_loop().time()}
+                },
+                upsert=True
+            )
+            logger.info(f"User {user_id} added/updated in database")
+            return True
+        except Exception as e:
+            logger.error(f"Error adding user {user_id}: {e}")
+            return False
+    
+    def add_subscriber(self, user_id: int):
+        """Add a subscriber"""
+        try:
+            self.subscribers_collection.update_one(
+                {'user_id': user_id},
+                {
+                    '$set': {
+                        'user_id': user_id,
+                        'subscribed_at': asyncio.get_event_loop().time()
+                    }
+                },
+                upsert=True
+            )
+            logger.info(f"User {user_id} subscribed")
+            return True
+        except Exception as e:
+            logger.error(f"Error subscribing user {user_id}: {e}")
+            return False
+    
+    def remove_subscriber(self, user_id: int):
+        """Remove a subscriber"""
+        try:
+            result = self.subscribers_collection.delete_one({'user_id': user_id})
+            if result.deleted_count > 0:
+                logger.info(f"User {user_id} unsubscribed")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Error unsubscribing user {user_id}: {e}")
+            return False
+    
+    def is_subscriber(self, user_id: int) -> bool:
+        """Check if user is a subscriber"""
+        try:
+            return self.subscribers_collection.find_one({'user_id': user_id}) is not None
+        except Exception as e:
+            logger.error(f"Error checking subscriber status for {user_id}: {e}")
+            return False
+    
+    def get_all_users(self) -> set:
+        """Get all user IDs"""
+        try:
+            users = self.users_collection.find({}, {'user_id': 1})
+            return {user['user_id'] for user in users}
+        except Exception as e:
+            logger.error(f"Error getting all users: {e}")
+            return set()
+    
+    def get_all_subscribers(self) -> set:
+        """Get all subscriber IDs"""
+        try:
+            subscribers = self.subscribers_collection.find({}, {'user_id': 1})
+            return {sub['user_id'] for sub in subscribers}
+        except Exception as e:
+            logger.error(f"Error getting all subscribers: {e}")
+            return set()
+    
+    def get_stats(self) -> Dict:
+        """Get bot statistics"""
+        try:
+            total_users = self.users_collection.count_documents({})
+            total_subscribers = self.subscribers_collection.count_documents({})
+            return {
+                'total_users': total_users,
+                'subscribers': total_subscribers,
+                'non_subscribers': total_users - total_subscribers
+            }
+        except Exception as e:
+            logger.error(f"Error getting stats: {e}")
+            return {'total_users': 0, 'subscribers': 0, 'non_subscribers': 0}
+    
+    def close(self):
+        """Close MongoDB connection"""
+        if self.client:
+            self.client.close()
+            logger.info("MongoDB connection closed")
+
+
 class BroadcastBot:
-    def __init__(self, token: str, admin_ids: List[int]):
+    def __init__(self, token: str, admin_ids: List[int], mongo_handler: MongoDBHandler):
         self.token = token
         self.admin_ids = admin_ids
-        self.subscribers = set()
-        self.all_users = set()
-        self.broadcast_data = {}
-        
-        # Load data from file if exists
-        self.load_data()
-    
-    def save_data(self):
-        """Save subscribers and users data to file"""
-        data = {
-            'subscribers': list(self.subscribers),
-            'all_users': list(self.all_users)
-        }
-        with open('bot_data.json', 'w') as f:
-            json.dump(data, f)
-    
-    def load_data(self):
-        """Load subscribers and users data from file"""
-        try:
-            with open('bot_data.json', 'r') as f:
-                data = json.load(f)
-                self.subscribers = set(data.get('subscribers', []))
-                self.all_users = set(data.get('all_users', []))
-        except FileNotFoundError:
-            logger.info("No existing data file found, starting fresh")
+        self.db = mongo_handler
     
     def is_admin(self, user_id: int) -> bool:
         """Check if user is admin"""
@@ -62,9 +174,11 @@ class BroadcastBot:
     
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command"""
-        user_id = update.effective_user.id
-        self.all_users.add(user_id)
-        self.save_data()
+        user = update.effective_user
+        user_id = user.id
+        
+        # Save user to database
+        self.db.add_user(user_id, user.username, user.first_name)
         
         if self.is_admin(user_id):
             message = (
@@ -91,23 +205,23 @@ class BroadcastBot:
     
     async def subscribe(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /subscribe command"""
-        user_id = update.effective_user.id
-        self.all_users.add(user_id)
+        user = update.effective_user
+        user_id = user.id
         
-        if user_id in self.subscribers:
+        # Ensure user exists in database
+        self.db.add_user(user_id, user.username, user.first_name)
+        
+        if self.db.is_subscriber(user_id):
             await update.message.reply_text("✅ You're already subscribed to broadcasts!")
         else:
-            self.subscribers.add(user_id)
-            self.save_data()
+            self.db.add_subscriber(user_id)
             await update.message.reply_text("🔔 Successfully subscribed to broadcasts!")
     
     async def unsubscribe(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /unsubscribe command"""
         user_id = update.effective_user.id
         
-        if user_id in self.subscribers:
-            self.subscribers.remove(user_id)
-            self.save_data()
+        if self.db.remove_subscriber(user_id):
             await update.message.reply_text("🔕 Successfully unsubscribed from broadcasts!")
         else:
             await update.message.reply_text("❌ You're not currently subscribed.")
@@ -124,9 +238,8 @@ class BroadcastBot:
         
         try:
             user_id = int(context.args[0])
-            self.subscribers.add(user_id)
-            self.all_users.add(user_id)
-            self.save_data()
+            self.db.add_user(user_id)
+            self.db.add_subscriber(user_id)
             await update.message.reply_text(f"✅ User {user_id} added to subscribers list!")
         except ValueError:
             await update.message.reply_text("❌ Invalid user ID. Please provide a numeric ID.")
@@ -137,11 +250,12 @@ class BroadcastBot:
             await update.message.reply_text("❌ You don't have permission to use this command.")
             return
         
+        stats = self.db.get_stats()
         stats_text = (
             f"📊 Bot Statistics\n\n"
-            f"👥 Total Users: {len(self.all_users)}\n"
-            f"🔔 Subscribers: {len(self.subscribers)}\n"
-            f"🔕 Non-subscribers: {len(self.all_users - self.subscribers)}"
+            f"👥 Total Users: {stats['total_users']}\n"
+            f"🔔 Subscribers: {stats['subscribers']}\n"
+            f"🔕 Non-subscribers: {stats['non_subscribers']}"
         )
         await update.message.reply_text(stats_text)
     
@@ -151,17 +265,19 @@ class BroadcastBot:
             await update.message.reply_text("❌ You don't have permission to use this command.")
             return
         
-        if not self.subscribers:
+        subscribers = self.db.get_all_subscribers()
+        
+        if not subscribers:
             await update.message.reply_text("📝 No subscribers yet.")
             return
         
-        subscribers_list = "\n".join([f"• {sub_id}" for sub_id in sorted(self.subscribers)])
-        message = f"📝 Subscribers List ({len(self.subscribers)} total):\n\n{subscribers_list}"
+        subscribers_list = "\n".join([f"• {sub_id}" for sub_id in sorted(subscribers)])
+        message = f"📝 Subscribers List ({len(subscribers)} total):\n\n{subscribers_list}"
         
         # Telegram has a message length limit, so split if too long
         if len(message) > 4000:
             chunks = [subscribers_list[i:i+3500] for i in range(0, len(subscribers_list), 3500)]
-            await update.message.reply_text(f"📝 Subscribers List ({len(self.subscribers)} total):")
+            await update.message.reply_text(f"📝 Subscribers List ({len(subscribers)} total):")
             for chunk in chunks:
                 await update.message.reply_text(chunk)
         else:
@@ -184,10 +300,8 @@ class BroadcastBot:
     
     async def receive_broadcast_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Receive the broadcast message"""
-        # Store the message
         context.user_data['broadcast_message'] = update.message
         
-        # Ask about inline buttons
         keyboard = [
             [InlineKeyboardButton("✅ Yes, add buttons", callback_data="add_buttons")],
             [InlineKeyboardButton("❌ No, skip buttons", callback_data="skip_buttons")]
@@ -268,7 +382,6 @@ class BroadcastBot:
             "• No restrictions"
         )
         
-        # Use appropriate method based on whether this is a callback or message
         if hasattr(update, 'callback_query') and update.callback_query:
             await update.callback_query.message.reply_text(message, reply_markup=reply_markup, parse_mode='Markdown')
         else:
@@ -281,7 +394,6 @@ class BroadcastBot:
         query = update.callback_query
         await query.answer()
         
-        # Store protection setting
         if query.data == "protect_yes":
             context.user_data['protect_content'] = True
             protection_status = "🔒 Message will be protected (no forwarding/sharing)"
@@ -295,6 +407,8 @@ class BroadcastBot:
     
     async def ask_target_audience(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Ask who to send the broadcast to"""
+        stats = self.db.get_stats()
+        
         keyboard = [
             [InlineKeyboardButton("👥 All Users", callback_data="target_all")],
             [InlineKeyboardButton("🔔 Subscribers Only", callback_data="target_subscribers")],
@@ -303,14 +417,13 @@ class BroadcastBot:
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         stats_text = (
-            f"👥 All Users: {len(self.all_users)}\n"
-            f"🔔 Subscribers: {len(self.subscribers)}\n"
-            f"🔕 Non-subscribers: {len(self.all_users - self.subscribers)}"
+            f"👥 All Users: {stats['total_users']}\n"
+            f"🔔 Subscribers: {stats['subscribers']}\n"
+            f"🔕 Non-subscribers: {stats['non_subscribers']}"
         )
         
         message = f"🎯 Choose Target Audience\n\n{stats_text}\n\nWho should receive this broadcast?"
         
-        # Use appropriate method based on whether this is a callback or message
         if hasattr(update, 'callback_query') and update.callback_query:
             await update.callback_query.message.reply_text(message, reply_markup=reply_markup)
         else:
@@ -324,14 +437,17 @@ class BroadcastBot:
         await query.answer()
         
         # Determine target users
+        all_users = self.db.get_all_users()
+        subscribers = self.db.get_all_subscribers()
+        
         if query.data == "target_all":
-            target_users = self.all_users
+            target_users = all_users
             audience_name = "All Users"
         elif query.data == "target_subscribers":
-            target_users = self.subscribers
+            target_users = subscribers
             audience_name = "Subscribers"
         else:  # target_nonsubscribers
-            target_users = self.all_users - self.subscribers
+            target_users = all_users - subscribers
             audience_name = "Non-subscribers"
         
         if not target_users:
@@ -362,7 +478,6 @@ class BroadcastBot:
         
         for user_id in target_users:
             try:
-                # Handle different message types with protection
                 if broadcast_message.text:
                     await context.bot.send_message(
                         chat_id=user_id,
@@ -436,7 +551,6 @@ class BroadcastBot:
         """Handle errors"""
         logger.error(f"Update {update} caused error {context.error}")
         
-        # Try to notify the user about the error
         if update and update.effective_chat:
             try:
                 await context.bot.send_message(
@@ -444,7 +558,6 @@ class BroadcastBot:
                     text="❌ Sorry, an error occurred while processing your request. Please try again."
                 )
             except Exception:
-                # If we can't send a message, just log it
                 logger.error("Could not send error message to user")
     
     def create_health_server(self, port: int):
@@ -471,7 +584,6 @@ class BroadcastBot:
             await site.start()
             logger.info(f"Health check server started on port {port}")
             
-            # Keep the server running
             while True:
                 await asyncio.sleep(1)
         
@@ -482,6 +594,7 @@ class BroadcastBot:
         
         thread = threading.Thread(target=run_in_thread, daemon=True)
         thread.start()
+    
     def create_application(self):
         """Create and configure the application"""
         application = Application.builder().token(self.token).build()
@@ -522,11 +635,13 @@ class BroadcastBot:
         
         return application
 
+
 def main():
     """Main function to run the bot"""
     # Get configuration from environment variables
     BOT_TOKEN = os.getenv('BOT_TOKEN')
     ADMIN_IDS = os.getenv('ADMIN_IDS', '').split(',')
+    MONGODB_URI = os.getenv('MONGODB_URI')
     
     if not BOT_TOKEN:
         raise ValueError("BOT_TOKEN environment variable is required")
@@ -534,16 +649,23 @@ def main():
     if not ADMIN_IDS or ADMIN_IDS == ['']:
         raise ValueError("ADMIN_IDS environment variable is required")
     
+    if not MONGODB_URI:
+        raise ValueError("MONGODB_URI environment variable is required")
+    
     try:
         admin_ids = [int(admin_id.strip()) for admin_id in ADMIN_IDS if admin_id.strip()]
     except ValueError:
         raise ValueError("ADMIN_IDS must be comma-separated list of integers")
     
+    # Initialize MongoDB connection
+    logger.info("Connecting to MongoDB...")
+    mongo_handler = MongoDBHandler(MONGODB_URI)
+    
     # Create bot
-    bot = BroadcastBot(BOT_TOKEN, admin_ids)
+    bot = BroadcastBot(BOT_TOKEN, admin_ids, mongo_handler)
     application = bot.create_application()
     
-    # Get port from environment (Koyeb sets this)
+    # Get port from environment
     port = int(os.getenv('PORT', 8000))
     
     logger.info(f"Starting bot with {len(admin_ids)} admin(s)")
@@ -556,9 +678,14 @@ def main():
     import time
     time.sleep(2)
     
-    # Run the bot (this will block)
+    # Run the bot
     logger.info("Starting Telegram bot polling...")
-    application.run_polling()
+    try:
+        application.run_polling()
+    finally:
+        # Clean up MongoDB connection
+        mongo_handler.close()
+
 
 if __name__ == '__main__':
     main()
