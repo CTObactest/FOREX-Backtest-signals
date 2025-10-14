@@ -607,10 +607,7 @@ class BroadcastBot:
             message = (
                 "👋 Welcome to PipSage — wise signals, steady gains!\n\n"
                 "You'll get curated trade signals and VIP updates here.\n"
-                "Enable notifications to get notified of broadcasts.\n\n"
-                "Commands:\n"
-                "/subscribe - Subscribe to broadcasts\n"
-                "/unsubscribe - Unsubscribe from broadcasts"
+                "Enable notifications to get notified of broadcasts.\n"
             )
             await update.message.reply_text(message)
 
