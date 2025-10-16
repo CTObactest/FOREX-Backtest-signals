@@ -1287,7 +1287,158 @@ class BroadcastBot:
         })
 
         logger.info(f"Approved broadcast sent: {success_count} success, {failed_count} failed")
+        
+    async def start_broadcast(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Start broadcast conversation"""
+        if not self.has_permission(update.effective_user.id, Permission.BROADCAST):
+            await update.message.reply_text("❌ You don't have permission to use this command.")
+            return ConversationHandler.END
 
+        await update.message.reply_text(
+            "📢 Start Broadcasting\n\n"
+            "Send me the message to broadcast.\n"
+            "You can send text, photos, videos, or documents.\n\n"
+            "Send /cancel to cancel."
+        )
+        context.user_data.clear()
+        return WAITING_MESSAGE
+
+    async def schedule_broadcast_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Start scheduled broadcast conversation"""
+        if not self.has_permission(update.effective_user.id, Permission.SCHEDULE_BROADCASTS):
+            await update.message.reply_text("❌ You don't have permission to use this command.")
+            return ConversationHandler.END
+
+        await update.message.reply_text(
+            "🗓️ Schedule a Broadcast\n\n"
+            "First, send me the message to schedule.\n"
+            "You can send text, photos, videos, or documents.\n\n"
+            "Send /cancel to cancel."
+        )
+        context.user_data.clear()
+        return WAITING_MESSAGE
+
+    async def receive_broadcast_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Receive broadcast message and ask for next step"""
+        context.user_data['broadcast_message'] = update.message
+
+        if update.message.photo:
+            keyboard = [
+                [
+                    InlineKeyboardButton("💧 Add Watermark", callback_data="watermark_yes"),
+                    InlineKeyboardButton("➡️ Skip", callback_data="watermark_no")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text("Add a watermark to the image?", reply_markup=reply_markup)
+            return WAITING_BUTTONS
+
+        keyboard = [
+            [
+                InlineKeyboardButton("➕ Add Buttons", callback_data="add_buttons"),
+                InlineKeyboardButton("➡️ Skip", callback_data="skip_buttons")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text("Do you want to add inline buttons to your message?",
+                                      reply_markup=reply_markup)
+        return WAITING_BUTTONS
+        
+    async def handle_watermark_choice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle watermark choice"""
+        query = update.callback_query
+        await query.answer()
+
+        use_watermark = query.data == "watermark_yes"
+        context.user_data['use_watermark'] = use_watermark
+
+        if use_watermark:
+            await query.edit_message_text("Watermarking image...")
+            message = context.user_data['broadcast_message']
+            photo_file = await message.photo[-1].get_file()
+            
+            image_bytes = await photo_file.download_as_bytearray()
+            watermarked_image = self.watermarker.add_watermark(bytes(image_bytes))
+            
+            context.user_data['watermarked_image'] = watermarked_image
+
+        keyboard = [
+            [
+                InlineKeyboardButton("➕ Add Buttons", callback_data="add_buttons"),
+                InlineKeyboardButton("➡️ Skip", callback_data="skip_buttons")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text("Do you want to add inline buttons to your message?",
+                                      reply_markup=reply_markup)
+        return WAITING_BUTTONS
+        
+    async def handle_buttons_choice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle buttons choice"""
+        query = update.callback_query
+        await query.answer()
+
+        if query.data == "add_buttons":
+            await query.edit_message_text(
+                "Send me the buttons in the format:\n"
+                "Button 1 text | http://example.com/link1\n"
+                "Button 2 text | http://example.com/link2"
+            )
+            return WAITING_BUTTONS
+        else:
+            context.user_data['inline_buttons'] = None
+            keyboard = [
+                [
+                    InlineKeyboardButton("🔒 Protect Content", callback_data="protect_yes"),
+                    InlineKeyboardButton("🔓 Don't Protect", callback_data="protect_no")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text("Do you want to protect the message content?",
+                                          reply_markup=reply_markup)
+            return WAITING_PROTECTION
+            
+    async def receive_buttons(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Receive and parse buttons"""
+        lines = update.message.text.strip().split('\n')
+        buttons = []
+        for line in lines:
+            parts = line.split('|', 1)
+            if len(parts) == 2:
+                text = parts[0].strip()
+                url = parts[1].strip()
+                buttons.append([InlineKeyboardButton(text, url=url)])
+
+        context.user_data['inline_buttons'] = InlineKeyboardMarkup(buttons)
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("🔒 Protect Content", callback_data="protect_yes"),
+                InlineKeyboardButton("🔓 Don't Protect", callback_data="protect_no")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text("Do you want to protect the message content?",
+                                      reply_markup=reply_markup)
+        return WAITING_PROTECTION
+
+    async def handle_protection_choice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle content protection choice"""
+        query = update.callback_query
+        await query.answer()
+
+        protect_content = query.data == "protect_yes"
+        context.user_data['protect_content'] = protect_content
+
+        # If this is a scheduled broadcast, ask for time
+        if 'scheduled' in context.user_data and context.user_data['scheduled']:
+            await query.edit_message_text(
+                "⏰ Enter scheduled time (e.g., '2024-12-31 23:59') or relative time (e.g., '1h 30m')."
+            )
+            return WAITING_SCHEDULE_TIME
+
+        return await self.ask_target_audience(query, context, scheduled=False)
+        
     async def ask_target_audience(self, update, context: ContextTypes.DEFAULT_TYPE, scheduled=False):
         """Ask who to send the broadcast to"""
         stats = self.db.get_stats()
@@ -1316,10 +1467,7 @@ class BroadcastBot:
         else:
             await context.bot.send_message(chat_id=update.from_user.id, text=message, reply_markup=reply_markup)
 
-        if scheduled:
-            return WAITING_TARGET
-        else:
-            return WAITING_TARGET
+        return WAITING_TARGET
 
     async def handle_target_choice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle target audience choice and send broadcast"""
@@ -1841,6 +1989,268 @@ class BroadcastBot:
         )
 
         return application
+        
+    async def receive_schedule_time(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Receive and parse schedule time"""
+        try:
+            # Simple parsing for '1h 30m' or '2d'
+            time_str = update.message.text.lower()
+            delta = timedelta()
+            parts = time_str.replace('d', 'd ').replace('h', 'h ').replace('m', 'm ').split()
+            
+            val = 0
+            for part in parts:
+                if part.isdigit():
+                    val = int(part)
+                elif 'd' in part:
+                    delta += timedelta(days=val)
+                elif 'h' in part:
+                    delta += timedelta(hours=val)
+                elif 'm' in part:
+                    delta += timedelta(minutes=val)
+            
+            if delta == timedelta():
+                # Try parsing as absolute time
+                scheduled_time = datetime.fromisoformat(time_str)
+            else:
+                scheduled_time = datetime.now() + delta
+
+            context.user_data['scheduled_time'] = scheduled_time.timestamp()
+
+            keyboard = [
+                [InlineKeyboardButton("🔁 Once", callback_data="repeat_once")],
+                [InlineKeyboardButton("🔁 Daily", callback_data="repeat_daily")],
+                [InlineKeyboardButton("🔁 Weekly", callback_data="repeat_weekly")],
+                [InlineKeyboardButton("🔁 Monthly", callback_data="repeat_monthly")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text("Set repeat interval:", reply_markup=reply_markup)
+            return WAITING_SCHEDULE_REPEAT
+        except ValueError:
+            await update.message.reply_text("Invalid time format. Use 'YYYY-MM-DD HH:MM' or '1h 30m'.")
+            return WAITING_SCHEDULE_TIME
+    
+    async def receive_schedule_repeat(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Receive schedule repeat choice"""
+        query = update.callback_query
+        await query.answer()
+
+        repeat = query.data.split('_')[1]
+        context.user_data['repeat'] = repeat
+
+        return await self.ask_target_audience(query, context, scheduled=True)
+
+    async def save_template_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Start save template conversation"""
+        if not self.has_permission(update.effective_user.id, Permission.MANAGE_TEMPLATES):
+            await update.message.reply_text("❌ You don't have permission to use this command.")
+            return ConversationHandler.END
+
+        await update.message.reply_text("Send me the message to save as a template.")
+        context.user_data.clear()
+        return WAITING_TEMPLATE_MESSAGE
+
+    async def receive_template_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Receive template message"""
+        context.user_data['template_message'] = update.message
+        await update.message.reply_text("Enter a name for this template:")
+        return WAITING_TEMPLATE_NAME
+
+    async def receive_template_name(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Receive template name"""
+        context.user_data['template_name'] = update.message.text
+        await update.message.reply_text("Enter a category for this template (e.g., 'welcome', 'promo'):")
+        return WAITING_TEMPLATE_CATEGORY
+
+    async def receive_template_category(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Receive template category and save"""
+        category = update.message.text
+        name = context.user_data['template_name']
+        message = context.user_data['template_message']
+        
+        message_data = {}
+        if message.text:
+            message_data['type'] = 'text'
+            message_data['content'] = message.text
+        elif message.photo:
+            message_data['type'] = 'photo'
+            message_data['file_id'] = message.photo[-1].file_id
+            message_data['caption'] = message.caption
+        elif message.video:
+            message_data['type'] = 'video'
+            message_data['file_id'] = message.video.file_id
+            message_data['caption'] = message.caption
+        elif message.document:
+            message_data['type'] = 'document'
+            message_data['file_id'] = message.document.file_id
+            message_data['caption'] = message.caption
+            
+        template_id = self.db.save_template(name, message_data, category, update.effective_user.id)
+        if template_id:
+            await update.message.reply_text(f"✅ Template '{name}' saved successfully!")
+        else:
+            await update.message.reply_text("❌ Failed to save template.")
+        
+        return ConversationHandler.END
+        
+    async def add_admin_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Start add admin conversation"""
+        if not self.has_permission(update.effective_user.id, Permission.MANAGE_ADMINS):
+            await update.message.reply_text("❌ You don't have permission to use this command.")
+            return ConversationHandler.END
+
+        await update.message.reply_text("Send me the user ID of the new admin.")
+        return WAITING_ADMIN_ID
+
+    async def receive_admin_id(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Receive admin ID and ask for role"""
+        try:
+            user_id = int(update.message.text)
+            context.user_data['new_admin_id'] = user_id
+
+            keyboard = [
+                [InlineKeyboardButton("Broadcaster", callback_data="role_broadcaster")],
+                [InlineKeyboardButton("Moderator", callback_data="role_moderator")],
+                [InlineKeyboardButton("Admin", callback_data="role_admin")],
+                [InlineKeyboardButton("Super Admin", callback_data="role_super_admin")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text("Choose a role for the new admin:", reply_markup=reply_markup)
+            return WAITING_ADMIN_ROLE
+        except ValueError:
+            await update.message.reply_text("Invalid user ID. Please send a numeric ID.")
+            return WAITING_ADMIN_ID
+
+    async def receive_admin_role(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Receive admin role and add admin"""
+        query = update.callback_query
+        await query.answer()
+
+        role_str = query.data.split('_')[1]
+        role = AdminRole(f"{role_str}")
+        user_id = context.user_data['new_admin_id']
+
+        if self.db.add_admin(user_id, role, query.from_user.id):
+            await query.edit_message_text(f"✅ User {user_id} is now an admin with role '{role.value}'.")
+        else:
+            await query.edit_message_text(f"❌ Failed to add admin.")
+
+        return ConversationHandler.END
+
+    async def remove_admin_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /removeadmin command"""
+        if not self.has_permission(update.effective_user.id, Permission.MANAGE_ADMINS):
+            await update.message.reply_text("❌ You don't have permission to use this command.")
+            return
+
+        if not context.args:
+            await update.message.reply_text("❌ Please provide a user ID: /removeadmin <user_id>")
+            return
+
+        try:
+            user_id = int(context.args[0])
+            if self.db.remove_admin(user_id, update.effective_user.id):
+                await update.message.reply_text(f"✅ Admin {user_id} has been removed.")
+            else:
+                await update.message.reply_text(f"❌ Admin {user_id} not found.")
+        except ValueError:
+            await update.message.reply_text("❌ Invalid user ID.")
+    
+    async def list_admins(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /admins command"""
+        if not self.has_permission(update.effective_user.id, Permission.MANAGE_ADMINS):
+            await update.message.reply_text("❌ You don't have permission to use this command.")
+            return
+
+        admins = self.db.get_all_admins()
+        if not admins:
+            await update.message.reply_text("No admins found.")
+            return
+
+        admin_list = "\n".join([f"• {a['user_id']} ({a['role']})" for a in admins])
+        await update.message.reply_text(f"👨‍💼 Admins:\n{admin_list}")
+
+    async def view_logs(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /logs command"""
+        if not self.has_permission(update.effective_user.id, Permission.VIEW_LOGS):
+            await update.message.reply_text("❌ You don't have permission to use this command.")
+            return
+            
+        logs = self.db.get_activity_logs()
+        if not logs:
+            await update.message.reply_text("No activity logs found.")
+            return
+
+        log_list = "\n".join([
+            f"• {datetime.fromtimestamp(log['timestamp']).strftime('%Y-%m-%d %H:%M')} "
+            f"| {log['user_id']} | {log['action']} | {log.get('details', {})}"
+            for log in logs
+        ])
+        await update.message.reply_text(f"📜 Activity Logs:\n{log_list}")
+
+    async def my_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /mystats command"""
+        user_id = update.effective_user.id
+        if not self.is_admin(user_id):
+            await update.message.reply_text("❌ This command is for admins only.")
+            return
+
+        stats = self.db.get_admin_stats(user_id)
+        stats_text = (
+            f"📊 Your Statistics\n\n"
+            f"📢 Broadcasts Sent: {stats.get('broadcasts', 0)}\n"
+            f"📝 Templates Created: {stats.get('templates', 0)}\n"
+            f"⏰ Broadcasts Scheduled: {stats.get('scheduled', 0)}"
+        )
+        await update.message.reply_text(stats_text)
+
+    async def list_templates(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /templates command"""
+        if not self.has_permission(update.effective_user.id, Permission.MANAGE_TEMPLATES):
+            await update.message.reply_text("❌ You don't have permission to use this command.")
+            return
+
+        templates = self.db.get_all_templates()
+        if not templates:
+            await update.message.reply_text("No templates found.")
+            return
+
+        template_list = "\n".join([f"• {t['name']} ({t['category']})" for t in templates])
+        await update.message.reply_text(f"📝 Templates:\n{template_list}")
+
+    async def list_scheduled(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /scheduled command"""
+        if not self.has_permission(update.effective_user.id, Permission.SCHEDULE_BROADCASTS):
+            await update.message.reply_text("❌ You don't have permission to use this command.")
+            return
+
+        broadcasts = self.db.get_scheduled_broadcasts()
+        if not broadcasts:
+            await update.message.reply_text("No scheduled broadcasts.")
+            return
+
+        broadcast_list = "\n".join([
+            f"• ID: {str(b['_id'])[-6:]} | "
+            f"{datetime.fromtimestamp(b['scheduled_time']).strftime('%Y-%m-%d %H:%M')}"
+            for b in broadcasts
+        ])
+        await update.message.reply_text(f"⏰ Scheduled Broadcasts:\n{broadcast_list}")
+
+    async def cancel_scheduled_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /cancel_scheduled command"""
+        if not self.has_permission(update.effective_user.id, Permission.SCHEDULE_BROADCASTS):
+            await update.message.reply_text("❌ You don't have permission to use this command.")
+            return
+
+        if not context.args:
+            await update.message.reply_text("❌ Please provide a broadcast ID: /cancel_scheduled <id>")
+            return
+
+        broadcast_id = context.args[0]
+        if self.db.cancel_scheduled_broadcast(broadcast_id, update.effective_user.id):
+            await update.message.reply_text(f"✅ Scheduled broadcast {broadcast_id} cancelled.")
+        else:
+            await update.message.reply_text(f"❌ Broadcast {broadcast_id} not found or already processed.")
 
 
 def main():
@@ -1876,7 +2286,6 @@ def main():
 
     bot.run_health_server(port)
 
-    import time
     time.sleep(2)
 
     logger.info("Starting Telegram bot...")
