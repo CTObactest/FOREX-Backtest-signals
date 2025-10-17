@@ -50,7 +50,7 @@ WAITING_SIGNAL_MESSAGE = 11
     WAITING_ACCOUNT_NAME,
     WAITING_ACCOUNT_NUMBER,
     WAITING_TELEGRAM_ID,
-    WAITING_DECLINE_REASON, # <-- NEW STATE
+    WAITING_DECLINE_REASON,
 ) = range(12, 23)
 
 
@@ -720,7 +720,7 @@ class BroadcastBot:
             "CR5128821", "CR5128906", "CR5108974", "CR5140335", "CR5140339", "CR5146592",
             "CR5146651", "CR5140283", "CR5150548", "CR5168586", "CR5182098", "CR5195948",
             "CR5195953", "CR5195954", "CR5208742", "CR5191512", "CR5191516", "CR5230088",
-            "CR5247331", "CR5232901", "CR5304118", "CR5376438", "CR5383018", "CR5559722",
+            "CR5242731", "CR5232901", "CR5304118", "CR5376438", "CR5383018", "CR5559722",
             "CR5576367", "CR5583683", "CR5747075", "CR5845914", "CR5851342", "CR5851788",
             "CR5882107", "CR6174976", "CR6200366", "CR6156707", "CR6158587", "CR6300261",
             "CR6352212", "CR6384361", "CR6399574", "CR6408968", "CR6439217", "CR6706694",
@@ -2062,7 +2062,6 @@ class BroadcastBot:
             fallbacks=[CommandHandler("cancel", self.cancel_broadcast)],
         )
 
-        # <-- NEW HANDLER for VIP request approval/decline -->
         vip_request_handler = ConversationHandler(
             entry_points=[CallbackQueryHandler(self.handle_vip_request_review, pattern="^vip_")],
             states={
@@ -2109,7 +2108,7 @@ class BroadcastBot:
 
         # Subscription and VIP request handling
         application.add_handler(subscribe_handler)
-        application.add_handler(vip_request_handler) # <-- ADDED NEW HANDLER
+        application.add_handler(vip_request_handler)
         application.add_handler(
             MessageHandler(
                 filters.Regex(r"^(Hello|Hi|Hey|Good morning|Good afternoon|Good evening|What's up|Howdy|Greetings|Hey there)$"),
@@ -2279,7 +2278,6 @@ class BroadcastBot:
             f"User ID: {user_id}"
         )
 
-        # <-- MODIFICATION: Add buttons to the admin notification -->
         keyboard = [
             [
                 InlineKeyboardButton("✅ Approve", callback_data=f"vip_approve_{user_id}"),
@@ -2303,7 +2301,6 @@ class BroadcastBot:
         )
         return ConversationHandler.END
 
-    # <-- NEW FUNCTION: Handle admin's decision on VIP request -->
     async def handle_vip_request_review(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle the approve/decline decision from an admin."""
         query = update.callback_query
@@ -2338,7 +2335,6 @@ class BroadcastBot:
             await query.edit_message_text("Please enter the reason for declining this request.")
             return WAITING_DECLINE_REASON
 
-    # <-- NEW FUNCTION: Receive the decline reason and notify the user -->
     async def receive_decline_reason(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Receives the decline reason from the admin and notifies the user."""
         admin_id = update.effective_user.id
@@ -2545,13 +2541,15 @@ class BroadcastBot:
         admin_list = "\n".join([f"• {a['user_id']} ({a['role']})" for a in admins])
         await update.message.reply_text(f"👨‍💼 Admins:\n{admin_list}")
 
+    # <-- MODIFICATION: Only super admins can view logs, and only the last 10 -->
     async def view_logs(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /logs command"""
-        if not self.has_permission(update.effective_user.id, Permission.VIEW_LOGS):
+        user_id = update.effective_user.id
+        if user_id not in self.super_admin_ids:
             await update.message.reply_text("❌ You don't have permission to use this command.")
             return
             
-        logs = self.db.get_activity_logs()
+        logs = self.db.get_activity_logs(limit=10)
         if not logs:
             await update.message.reply_text("No activity logs found.")
             return
@@ -2561,7 +2559,7 @@ class BroadcastBot:
             f"| {log['user_id']} | {log['action']} | {log.get('details', {})}"
             for log in logs
         ])
-        await update.message.reply_text(f"📜 Activity Logs:\n{log_list}")
+        await update.message.reply_text(f"📜 Last 10 Activity Logs:\n{log_list}")
 
     async def my_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /mystats command"""
