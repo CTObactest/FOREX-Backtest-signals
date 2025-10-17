@@ -1036,8 +1036,8 @@ class BroadcastBot:
             await query.message.reply_text("❌ Signal rejected.")
 
     async def broadcast_signal(self, context: ContextTypes.DEFAULT_TYPE, suggestion: Dict):
-        """Broadcast approved signal to all subscribers"""
-        subscribers = self.db.get_all_subscribers()
+        """Broadcast approved signal to all users"""
+        target_users = self.db.get_all_users()  # Changed from get_all_subscribers
         message_data = suggestion['message_data']
         suggester = suggestion['suggester_name']
 
@@ -1047,7 +1047,7 @@ class BroadcastBot:
         success_count = 0
         failed_count = 0
 
-        for user_id in subscribers:
+        for user_id in target_users:  # Changed from subscribers
             try:
                 if message_data['type'] == 'text':
                     full_text = message_data['content'] + attribution
