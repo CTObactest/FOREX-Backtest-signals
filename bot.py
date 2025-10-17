@@ -21,6 +21,8 @@ from PIL import Image, ImageDraw, ImageFont
 import io
 import time
 from enum import Enum
+import re
+import pytesseract
 
 # Enable logging
 logging.basicConfig(
@@ -35,6 +37,21 @@ WAITING_TEMPLATE_NAME, WAITING_TEMPLATE_MESSAGE, WAITING_TEMPLATE_CATEGORY = ran
 WAITING_SCHEDULE_TIME, WAITING_SCHEDULE_REPEAT = range(7, 9)
 WAITING_ADMIN_ID, WAITING_ADMIN_ROLE = range(9, 11)
 WAITING_SIGNAL_MESSAGE = 11
+
+# New states for verification
+(
+    WAITING_VIP_GROUP,
+    WAITING_ACCOUNT_CREATION_CONFIRMATION,
+    WAITING_ACCOUNT_DATE,
+    WAITING_CR_NUMBER,
+    WAITING_SCREENSHOT,
+    WAITING_KENNEDYNESPOT_CONFIRMATION,
+    WAITING_BROKER_CHOICE,
+    WAITING_ACCOUNT_NAME,
+    WAITING_ACCOUNT_NUMBER,
+    WAITING_TELEGRAM_ID,
+) = range(12, 22)
+
 
 class AdminRole(Enum):
     """Admin role definitions"""
@@ -668,7 +685,70 @@ class BroadcastBot:
         self.super_admin_ids = super_admin_ids
         self.db = mongo_handler
         self.watermarker = ImageWatermarker()
-
+        self.cr_numbers = {
+            "CR5499637", "CR5500382", "CR5529877", "CR5535613", "CR5544922", "CR5551288",
+            "CR5552176", "CR5556284", "CR5556287", "CR5561483", "CR5563616", "CR5577880",
+            "CR5585327", "CR5589802", "CR5592846", "CR5594968", "CR5595416", "CR5597602",
+            "CR5605478", "CR5607701", "CR5616548", "CR5616657", "CR5617024", "CR5618746",
+            "CR5634872", "CR5638055", "CR5658165", "CR5662243", "CR5681280", "CR5686151",
+            "CR5693620", "CR5694136", "CR5729218", "CR5729228", "CR5729255", "CR5734377",
+            "CR5734685", "CR5734864", "CR5751222", "CR5755906", "CR5784782", "CR5786213",
+            "CR5786969", "CR5799865", "CR5799868", "CR5799916", "CR5822964", "CR5836935",
+            "CR5836938", "CR5839647", "CR5839797", "CR5859465", "CR5864046", "CR5873762",
+            "CR5881030", "CR5886556", "CR5890102", "CR5924066", "CR5930200", "CR5970531",
+            "CR6007156", "CR6012579", "CR6012919", "CR6022355", "CR6024318", "CR6037913",
+            "CR6043787", "CR6077426", "CR6086720", "CR6094490", "CR6102922", "CR6128596",
+            "CR6135793", "CR6141138", "CR6141427", "CR6141685", "CR6142172", "CR6142245",
+            "CR6143176", "CR6146767", "CR6146888", "CR6167387", "CR6172824", "CR6181075",
+            "CR6181076", "CR6182660", "CR6194673", "CR6198415", "CR6209246", "CR6268178",
+            "CR6283228", "CR6295186", "CR6299453", "CR6301714", "CR6313536", "CR6316942",
+            "CR6316943", "CR6316945", "CR6321295", "CR6330598", "CR6341042", "CR6379985",
+            "CR6399552", "CR6401733", "CR6403902", "CR6413389", "CR6423099", "CR6423523",
+            "CR6462778", "CR6474692", "CR6487699", "CR6505876", "CR6520436", "CR6520451",
+            "CR6523858", "CR6524558", "CR6528520", "CR6532131", "CR6532137", "CR6532275",
+            "CR6610101", "CR6620010", "CR6653814", "CR6667537", "CR6669363", "CR6669366",
+            "CR6675564", "CR6676337", "CR6676341", "CR6682471", "CR6691842", "CR6691852",
+            "CR6710741", "CR6756501", "CR6756521", "CR6762445", "CR6772496", "CR6799617",
+            "CR6800730", "CR6973584", "CR6978912", "CR6983840", "CR6984178", "CR6994219",
+            "CR7016028", "CR7044018", "CR7052204", "CR7112762", "CR7114951", "CR7124896",
+            "CR7237163", "CR7310563", "CR7380411", "CR7381612", "CR5217806", "CR5218145",
+            "CR5247338", "CR5431311", "CR5455669", "CR5141478", "CR5466762", "CR6154878",
+            "CR6514641", "CR7443452", "CR7462159", "CR7496923", "CR7514165", "CR7619347",
+            "CR7625010", "CR7655242", "CR7707424", "CR7708242", "CR4965219", "CR4985194",
+            "CR5053549", "CR5085020", "CR5076079", "CR5115383", "CR5127519", "CR5128799",
+            "CR5128821", "CR5128906", "CR5108974", "CR5140335", "CR5140339", "CR5146592",
+            "CR5146651", "CR5140283", "CR5150548", "CR5168586", "CR5182098", "CR5195948",
+            "CR5195953", "CR5195954", "CR5208742", "CR5191512", "CR5191516", "CR5230088",
+            "CR5242731", "CR5232901", "CR5304118", "CR5376438", "CR5383018", "CR5559722",
+            "CR5576367", "CR5583683", "CR5747075", "CR5845914", "CR5851342", "CR5851788",
+            "CR5882107", "CR6174976", "CR6200366", "CR6156707", "CR6158587", "CR6300261",
+            "CR6352212", "CR6384361", "CR6399574", "CR6408968", "CR6439217", "CR6706694",
+            "CR6771489", "CR6828268", "CR7283876", "CR7283878", "CR7383923", "CR7383924",
+            "CR7383926", "CR5107260", "CR5107344", "CR5121522", "CR5124042", "CR5131270",
+            "CR5131273", "CR5140709", "CR5145112", "CR5145144", "CR5150792", "CR5151132",
+            "CR5152411", "CR5156334", "CR5168665", "CR5171621", "CR5171935", "CR5172416",
+            "CR5174518", "CR5175283", "CR5175357", "CR5175623", "CR5176885", "CR5178412",
+            "CR5183689", "CR5192564", "CR5192768", "CR5196405", "CR5201751", "CR5201863",
+            "CR5208818", "CR5209139", "CR5211727", "CR5217038", "CR5217041", "CR5217294",
+            "CR5217716", "CR5217841", "CR5218709", "CR5220504", "CR5221257", "CR5222812",
+            "CR5224492", "CR5234722", "CR5250590", "CR5253563", "CR5253566", "CR5253922",
+            "CR5268275", "CR5273673", "CR5273869", "CR5276090", "CR5276310", "CR5281994",
+            "CR5283490", "CR5283554", "CR5283705", "CR5283721", "CR5291732", "CR5298913",
+            "CR5299111", "CR5299430", "CR5303230", "CR5304735", "CR5305240", "CR5305810",
+            "CR5310002", "CR5317151", "CR5321069", "CR5324653", "CR5325581", "CR5327120",
+            "CR5328157", "CR5337678", "CR5337712", "CR5337783", "CR5337784", "CR5337791",
+            "CR5337793", "CR5404655", "CR5421490", "CR5442253", "CR5442355", "CR5442531",
+            "CR5442605", "CR5444280", "CR5445094", "CR5446889", "CR5466632", "CR5471054",
+            "CR5477031", "CR5485897", "CR5487026", "CR5487767", "CR5487928", "CR5488506",
+            "CR5491460", "CR5499637", "CR5500382", "CR3648598", "CR3654244", "CR3654335",
+            "CR3762108", "CR3845409", "CR3925151", "CR4085158", "CR4090372", "CR4138661",
+            "CR4210749", "CR4296364", "CR4373296", "CR4488218", "CR4583558", "CR4655132",
+            "CR4965219", "CR4985194", "CR5053549", "CR5085020", "CR5076079", "CR5115383",
+            "CR5127519", "CR5128799", "CR5128821", "CR5128906", "CR7792475", "CR7814776",
+            "CR7816651", "CR7817244", "CR7818330", "CR5149678", "CR8010847", "CR8036589",
+            "CR8047034", "CR8052255", "CR7380411", "CR7707424", "CR8581785", "CR8644473",
+            "CR8648274", "CR8661054",
+        }
         # Initialize super admins in database
         for admin_id in super_admin_ids:
             self.db.add_admin(admin_id, AdminRole.SUPER_ADMIN, admin_id)
@@ -748,6 +828,7 @@ class BroadcastBot:
                 "You'll get curated trade signals and VIP updates here.\n"
                 "Enable notifications to get notified of broadcasts.\n\n"
                 "💡 Commands:\n"
+                "/subscribe - Join our VIP channels\n"
                 "/suggestsignal - Suggest a trading signal\n"
                 "/help - Show this message"
             )
@@ -1005,7 +1086,7 @@ class BroadcastBot:
             # Update status
             self.db.update_suggestion_status(suggestion_id, 'approved', query.from_user.id)
 
-            # Broadcast to all subscribers
+            # Broadcast to all users
             await self.broadcast_signal(context, suggestion)
 
             # Notify suggester
@@ -1018,7 +1099,7 @@ class BroadcastBot:
                 pass
 
             await query.edit_message_reply_markup(reply_markup=None)
-            await query.message.reply_text("✅ Signal approved and broadcasted to all subscribers!")
+            await query.message.reply_text("✅ Signal approved and broadcasted to all users!")
 
         elif action == "reject":
             self.db.update_suggestion_status(suggestion_id, 'rejected', query.from_user.id)
@@ -1037,7 +1118,7 @@ class BroadcastBot:
 
     async def broadcast_signal(self, context: ContextTypes.DEFAULT_TYPE, suggestion: Dict):
         """Broadcast approved signal to all users"""
-        target_users = self.db.get_all_users()  # Changed from get_all_subscribers
+        target_users = self.db.get_all_users()
         message_data = suggestion['message_data']
         suggester = suggestion['suggester_name']
 
@@ -1047,7 +1128,7 @@ class BroadcastBot:
         success_count = 0
         failed_count = 0
 
-        for user_id in target_users:  # Changed from subscribers
+        for user_id in target_users:
             try:
                 if message_data['type'] == 'text':
                     full_text = message_data['content'] + attribution
@@ -1944,6 +2025,42 @@ class BroadcastBot:
             fallbacks=[CommandHandler("cancel", self.cancel_broadcast)]
         )
 
+        # New subscribe handler
+        subscribe_handler = ConversationHandler(
+            entry_points=[CommandHandler("subscribe", self.subscribe_start)],
+            states={
+                WAITING_VIP_GROUP: [CallbackQueryHandler(self.receive_vip_group)],
+                WAITING_ACCOUNT_CREATION_CONFIRMATION: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_account_creation_confirmation)
+                ],
+                WAITING_ACCOUNT_DATE: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_account_date)
+                ],
+                WAITING_CR_NUMBER: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_cr_number)
+                ],
+                WAITING_SCREENSHOT: [
+                    MessageHandler(filters.PHOTO, self.receive_screenshot)
+                ],
+                WAITING_KENNEDYNESPOT_CONFIRMATION: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_kennedynespot_confirmation)
+                ],
+                WAITING_BROKER_CHOICE: [
+                    CallbackQueryHandler(self.receive_broker_choice, pattern="^broker_")
+                ],
+                WAITING_ACCOUNT_NAME: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_account_name)
+                ],
+                WAITING_ACCOUNT_NUMBER: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_account_number)
+                ],
+                WAITING_TELEGRAM_ID: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_telegram_id)
+                ],
+            },
+            fallbacks=[CommandHandler("cancel", self.cancel_broadcast)],
+        )
+
         # Basic commands
         application.add_handler(CommandHandler("start", self.start))
         application.add_handler(CommandHandler("help", self.help_command))
@@ -1978,6 +2095,15 @@ class BroadcastBot:
         # Signal suggestions
         application.add_handler(signal_handler)
 
+        # Subscription
+        application.add_handler(subscribe_handler)
+        application.add_handler(
+            MessageHandler(
+                filters.Regex(r"^(Hello|Hi|Hey|Good morning|Good afternoon|Good evening|What's up|Howdy|Greetings|Hey there)$"),
+                self.handle_greeting,
+            )
+        )
+
         # Error handler
         application.add_error_handler(self.error_handler)
 
@@ -1989,6 +2115,165 @@ class BroadcastBot:
         )
 
         return application
+
+    async def handle_greeting(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle greetings"""
+        await update.message.reply_text("Hello! How can I assist you today?")
+
+    async def subscribe_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Start the subscription conversation"""
+        keyboard = [
+            [InlineKeyboardButton("Deriv VIP", callback_data="vip_deriv")],
+            [InlineKeyboardButton("Currencies VIP", callback_data="vip_currencies")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            "Which VIP/Premium group do you wish to be added to?",
+            reply_markup=reply_markup
+        )
+        return WAITING_VIP_GROUP
+
+    async def receive_vip_group(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle VIP group selection"""
+        query = update.callback_query
+        await query.answer()
+        context.user_data['vip_group'] = query.data
+
+        if query.data == "vip_deriv":
+            await query.edit_message_text(
+                "Have you created an account following this procedure: https://t.me/forexbactest/1341?"
+            )
+            return WAITING_ACCOUNT_CREATION_CONFIRMATION
+        elif query.data == "vip_currencies":
+            keyboard = [
+                [InlineKeyboardButton("OctaFX", callback_data="broker_octafx")],
+                [InlineKeyboardButton("Vantage", callback_data="broker_vantage")],
+                [InlineKeyboardButton("LiteFinance", callback_data="broker_litefinance")],
+                [InlineKeyboardButton("JustMarkets", callback_data="broker_justmarkets")],
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                "Please select your affiliated broker:",
+                reply_markup=reply_markup
+            )
+            return WAITING_BROKER_CHOICE
+
+    async def receive_account_creation_confirmation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle account creation confirmation"""
+        await update.message.reply_text("When did you create the account? (e.g., today, yesterday, YYYY-MM-DD)")
+        return WAITING_ACCOUNT_DATE
+
+    async def receive_account_date(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle account creation date"""
+        # A more sophisticated date parsing could be added here
+        if "today" in update.message.text.lower() or "yesterday" in update.message.text.lower():
+            await update.message.reply_text("Please wait up to 24 hours for the account to reflect in the system.")
+            return ConversationHandler.END
+        else:
+            await update.message.reply_text("Please provide your CR number in the format 'CR12345'.")
+            return WAITING_CR_NUMBER
+
+    async def receive_cr_number(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle CR number and check against the list"""
+        cr_number = update.message.text.strip().upper()
+        if cr_number in self.cr_numbers:
+            await update.message.reply_text(
+                "I can verify that you are tagged under us. Please proceed to fund your account with a minimum of $50 and send me a screenshot."
+            )
+            return WAITING_SCREENSHOT
+        else:
+            await update.message.reply_text(
+                "Are you tagged under our partner, Kennedynespot? (yes/no)"
+            )
+            return WAITING_KENNEDYNESPOT_CONFIRMATION
+
+    async def receive_screenshot(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle the screenshot and check the balance"""
+        photo_file = await update.message.photo[-1].get_file()
+        photo_bytes = await photo_file.download_as_bytearray()
+
+        try:
+            text = pytesseract.image_to_string(Image.open(io.BytesIO(photo_bytes)))
+            # A simple regex to find numbers with a dollar sign
+            matches = re.findall(r'\$?(\d+\.\d{2})', text)
+            if matches:
+                balance = float(matches[0])
+                if balance >= 50:
+                    user_id = update.effective_user.id
+                    self.db.add_subscriber(user_id)
+                    await update.message.reply_text(
+                        "✅ Thank you! You have been added to the subscribers list."
+                    )
+                    return ConversationHandler.END
+                else:
+                    await update.message.reply_text(
+                        "The balance in the screenshot is less than $50. Please fund your account and try again."
+                    )
+                    return WAITING_SCREENSHOT
+            else:
+                await update.message.reply_text(
+                    "I could not detect a balance in the screenshot. Please try again with a clearer image."
+                )
+                return WAITING_SCREENSHOT
+        except Exception as e:
+            logger.error(f"Error processing screenshot: {e}")
+            await update.message.reply_text("Sorry, I had trouble processing the image. Please try again.")
+            return WAITING_SCREENSHOT
+
+    async def receive_kennedynespot_confirmation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle Kennedynespot confirmation"""
+        if "yes" in update.message.text.lower():
+            await update.message.reply_text(
+                "Please send us a direct message with a screenshot of the confirmation from our partner."
+            )
+        else:
+            await update.message.reply_text(
+                "Please follow the tagging guide: https://t.me/derivaccountopeningguide/66 and return after 24 hours to check again."
+            )
+        return ConversationHandler.END
+
+    async def receive_broker_choice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle broker selection for Currencies VIP"""
+        query = update.callback_query
+        await query.answer()
+        context.user_data['broker'] = query.data.split('_')[1]
+        await query.edit_message_text("Please provide the full name on your account.")
+        return WAITING_ACCOUNT_NAME
+
+    async def receive_account_name(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Receive the user's full name"""
+        context.user_data['account_name'] = update.message.text
+        await update.message.reply_text("Please provide your account number.")
+        return WAITING_ACCOUNT_NUMBER
+
+    async def receive_account_number(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Receive the user's account number"""
+        context.user_data['account_number'] = update.message.text
+        await update.message.reply_text("Please provide your Telegram ID (e.g., @username or your user ID).")
+        return WAITING_TELEGRAM_ID
+
+    async def receive_telegram_id(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Receive Telegram ID and send for approval"""
+        context.user_data['telegram_id'] = update.message.text
+        user_info = (
+            f"New Currencies VIP Request:\n\n"
+            f"Broker: {context.user_data['broker']}\n"
+            f"Account Name: {context.user_data['account_name']}\n"
+            f"Account Number: {context.user_data['account_number']}\n"
+            f"Telegram ID: {context.user_data['telegram_id']}\n"
+            f"User ID: {update.effective_user.id}"
+        )
+
+        for admin_id in self.super_admin_ids:
+            try:
+                await context.bot.send_message(chat_id=admin_id, text=user_info)
+            except Exception as e:
+                logger.error(f"Failed to notify super admin {admin_id}: {e}")
+
+        await update.message.reply_text(
+            "Thank you! Your details have been sent to the admins for approval. You will be notified once it's reviewed."
+        )
+        return ConversationHandler.END
         
     async def receive_schedule_time(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Receive and parse schedule time"""
