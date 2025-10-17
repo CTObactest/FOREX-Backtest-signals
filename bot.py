@@ -50,7 +50,8 @@ WAITING_SIGNAL_MESSAGE = 11
     WAITING_ACCOUNT_NAME,
     WAITING_ACCOUNT_NUMBER,
     WAITING_TELEGRAM_ID,
-) = range(12, 22)
+    WAITING_DECLINE_REASON, # <-- NEW STATE
+) = range(12, 23)
 
 
 class AdminRole(Enum):
@@ -719,7 +720,7 @@ class BroadcastBot:
             "CR5128821", "CR5128906", "CR5108974", "CR5140335", "CR5140339", "CR5146592",
             "CR5146651", "CR5140283", "CR5150548", "CR5168586", "CR5182098", "CR5195948",
             "CR5195953", "CR5195954", "CR5208742", "CR5191512", "CR5191516", "CR5230088",
-            "CR5242731", "CR5232901", "CR5304118", "CR5376438", "CR5383018", "CR5559722",
+            "CR5247331", "CR5232901", "CR5304118", "CR5376438", "CR5383018", "CR5559722",
             "CR5576367", "CR5583683", "CR5747075", "CR5845914", "CR5851342", "CR5851788",
             "CR5882107", "CR6174976", "CR6200366", "CR6156707", "CR6158587", "CR6300261",
             "CR6352212", "CR6384361", "CR6399574", "CR6408968", "CR6439217", "CR6706694",
@@ -2061,6 +2062,17 @@ class BroadcastBot:
             fallbacks=[CommandHandler("cancel", self.cancel_broadcast)],
         )
 
+        # <-- NEW HANDLER for VIP request approval/decline -->
+        vip_request_handler = ConversationHandler(
+            entry_points=[CallbackQueryHandler(self.handle_vip_request_review, pattern="^vip_")],
+            states={
+                WAITING_DECLINE_REASON: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_decline_reason)
+                ]
+            },
+            fallbacks=[CommandHandler("cancel", self.cancel_broadcast)]
+        )
+
         # Basic commands
         application.add_handler(CommandHandler("start", self.start))
         application.add_handler(CommandHandler("help", self.help_command))
@@ -2095,8 +2107,9 @@ class BroadcastBot:
         # Signal suggestions
         application.add_handler(signal_handler)
 
-        # Subscription
+        # Subscription and VIP request handling
         application.add_handler(subscribe_handler)
+        application.add_handler(vip_request_handler) # <-- ADDED NEW HANDLER
         application.add_handler(
             MessageHandler(
                 filters.Regex(r"^(Hello|Hi|Hey|Good morning|Good afternoon|Good evening|What's up|Howdy|Greetings|Hey there)$"),
@@ -2255,24 +2268,101 @@ class BroadcastBot:
     async def receive_telegram_id(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Receive Telegram ID and send for approval"""
         context.user_data['telegram_id'] = update.message.text
+        user_id = update.effective_user.id
+        
         user_info = (
             f"New Currencies VIP Request:\n\n"
             f"Broker: {context.user_data['broker']}\n"
             f"Account Name: {context.user_data['account_name']}\n"
             f"Account Number: {context.user_data['account_number']}\n"
             f"Telegram ID: {context.user_data['telegram_id']}\n"
-            f"User ID: {update.effective_user.id}"
+            f"User ID: {user_id}"
         )
+
+        # <-- MODIFICATION: Add buttons to the admin notification -->
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Approve", callback_data=f"vip_approve_{user_id}"),
+                InlineKeyboardButton("❌ Decline", callback_data=f"vip_decline_{user_id}")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
 
         for admin_id in self.super_admin_ids:
             try:
-                await context.bot.send_message(chat_id=admin_id, text=user_info)
+                await context.bot.send_message(
+                    chat_id=admin_id, 
+                    text=user_info,
+                    reply_markup=reply_markup
+                )
             except Exception as e:
                 logger.error(f"Failed to notify super admin {admin_id}: {e}")
 
         await update.message.reply_text(
             "Thank you! Your details have been sent to the admins for approval. You will be notified once it's reviewed."
         )
+        return ConversationHandler.END
+
+    # <-- NEW FUNCTION: Handle admin's decision on VIP request -->
+    async def handle_vip_request_review(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle the approve/decline decision from an admin."""
+        query = update.callback_query
+        await query.answer()
+
+        admin_id = query.from_user.id
+        if admin_id not in self.super_admin_ids:
+            await query.answer("You are not authorized to perform this action.", show_alert=True)
+            return
+
+        action, user_id_str = query.data.split('_')[1:]
+        user_id = int(user_id_str)
+
+        if action == "approve":
+            self.db.add_subscriber(user_id)
+            self.db.log_activity(admin_id, 'vip_approved', {'user_id': user_id})
+            
+            await query.edit_message_text(f"{query.message.text}\n\n--- ✅ Approved by {admin_id} ---")
+            
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text="Congratulations! Your Currencies VIP request has been approved. You are now a subscriber."
+                )
+            except Exception as e:
+                logger.error(f"Failed to notify user {user_id} of approval: {e}")
+            
+            return ConversationHandler.END
+
+        elif action == "decline":
+            context.user_data['user_to_decline'] = user_id
+            await query.edit_message_text("Please enter the reason for declining this request.")
+            return WAITING_DECLINE_REASON
+
+    # <-- NEW FUNCTION: Receive the decline reason and notify the user -->
+    async def receive_decline_reason(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Receives the decline reason from the admin and notifies the user."""
+        admin_id = update.effective_user.id
+        reason = update.message.text
+        user_id_to_decline = context.user_data.get('user_to_decline')
+
+        if not user_id_to_decline:
+            await update.message.reply_text("Error: Could not find the user to decline. Please try again.")
+            return ConversationHandler.END
+
+        self.db.log_activity(admin_id, 'vip_declined', {'user_id': user_id_to_decline, 'reason': reason})
+
+        try:
+            await context.bot.send_message(
+                chat_id=user_id_to_decline,
+                text=f"We regret to inform you that your Currencies VIP request has been declined.\n\nReason: {reason}"
+            )
+        except Exception as e:
+            logger.error(f"Failed to notify user {user_id_to_decline} of decline: {e}")
+        
+        await update.message.reply_text(f"The user {user_id_to_decline} has been notified of the decline.")
+        
+        # Clean up context
+        context.user_data.pop('user_to_decline', None)
         return ConversationHandler.END
         
     async def receive_schedule_time(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
