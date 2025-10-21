@@ -4,7 +4,7 @@ import asyncio
 from typing import Dict, List, Optional
 from aiohttp import web
 import threading
-from datetime import datetime, timedelta, time, timezone
+from datetime import datetime, timedelta, time as dt_time, timezone # <-- FIX 1: Renamed import
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -1322,6 +1322,9 @@ class BroadcastBot:
         # Update status with rating
         self.db.update_suggestion_status(suggestion_id, 'approved', query.from_user.id, rating=rating)
 
+        # Get updated suggestion data (with rating)
+        suggestion = self.db.get_suggestion_by_id(suggestion_id)
+
         # Broadcast to all users
         await self.broadcast_signal(context, suggestion)
 
@@ -1623,6 +1626,8 @@ class BroadcastBot:
             "Send /cancel to cancel."
         )
         context.user_data.clear()
+        # Mark as scheduled flow
+        context.user_data['scheduled'] = True 
         return WAITING_MESSAGE
 
     async def receive_broadcast_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1765,13 +1770,14 @@ class BroadcastBot:
             f"👨‍💼 Admins: {stats['admins']}"
         )
 
-        message = f"🎯 Choose Target Audience\n\n{stats_text}\n\nWho should receive this broadcast?"
+        message = f"🎯 Choose Target Audience\n\n{stats_text}\n\nWho should receive this message?"
 
         if hasattr(update, 'callback_query') and update.callback_query:
-            await update.callback_query.message.reply_text(message, reply_markup=reply_markup)
+            await update.callback_query.edit_message_text(message, reply_markup=reply_markup)
         elif hasattr(update, 'message'):
             await update.message.reply_text(message, reply_markup=reply_markup)
         else:
+            # Fallback for schedule flow
             await context.bot.send_message(chat_id=update.from_user.id, text=message, reply_markup=reply_markup)
 
         return WAITING_TARGET
@@ -2444,7 +2450,7 @@ class BroadcastBot:
         )
 
         # New: Leaderboard job (Sunday at 00:00 UTC)
-        utc_midnight = time(hour=0, minute=0, tzinfo=timezone.utc)
+        utc_midnight = dt_time(hour=0, minute=0, tzinfo=timezone.utc) # <-- FIX 2: Use renamed dt_time
         application.job_queue.run_daily(
             self.run_leaderboards_job,
             time=utc_midnight,
@@ -2682,7 +2688,8 @@ class BroadcastBot:
         elif action == "decline":
             context.user_data['user_to_decline'] = user_id
             context.user_data['admin_name'] = query.from_user.first_name or admin_id
-            context.user_data['original_message'] = query.message.text
+            context.user_data['original_message_text'] = query.message.text
+            context.user_data['original_message_id'] = query.message.message_id
             await query.edit_message_text("Please enter the reason for declining this request.")
             return WAITING_DECLINE_REASON
 
@@ -2692,7 +2699,8 @@ class BroadcastBot:
         reason = update.message.text
         user_id_to_decline = context.user_data.get('user_to_decline')
         admin_name = context.user_data.get('admin_name', admin_id)
-        original_message = context.user_data.get('original_message', "VIP Request")
+        original_message_text = context.user_data.get('original_message_text', "VIP Request")
+        original_message_id = context.user_data.get('original_message_id')
 
 
         if not user_id_to_decline:
@@ -2712,21 +2720,22 @@ class BroadcastBot:
         await update.message.reply_text(f"The user {user_id_to_decline} has been notified of the decline.")
         
         # Restore original admin message with decline info
-        try:
-            original_message_id = update.message.reply_to_message.message_id
-            await context.bot.edit_message_text(
-                chat_id=admin_id,
-                message_id=original_message_id,
-                text=f"{original_message}\n\n--- ❌ Declined by {admin_name} ---"
-            )
-        except Exception as e:
-             logger.error(f"Failed to edit original decline message: {e}")
+        if original_message_id:
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=admin_id,
+                    message_id=original_message_id,
+                    text=f"{original_message_text}\n\n--- ❌ Declined by {admin_name} ---"
+                )
+            except Exception as e:
+                 logger.error(f"Failed to edit original decline message: {e}")
 
 
         # Clean up context
         context.user_data.pop('user_to_decline', None)
         context.user_data.pop('admin_name', None)
-        context.user_data.pop('original_message', None)
+        context.user_data.pop('original_message_text', None)
+        context.user_data.pop('original_message_id', None)
         return ConversationHandler.END
         
     async def receive_schedule_time(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
