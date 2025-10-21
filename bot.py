@@ -4,7 +4,7 @@ import asyncio
 from typing import Dict, List, Optional
 from aiohttp import web
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time, timezone
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -51,7 +51,8 @@ WAITING_SIGNAL_MESSAGE = 11
     WAITING_ACCOUNT_NUMBER,
     WAITING_TELEGRAM_ID,
     WAITING_DECLINE_REASON,
-) = range(12, 23)
+    WAITING_SIGNAL_RATING,  # New state for rating signals
+) = range(12, 24)
 
 
 class AdminRole(Enum):
@@ -121,6 +122,7 @@ class MongoDBHandler:
         self.activity_logs_collection = None
         self.broadcast_approvals_collection = None
         self.signal_suggestions_collection = None
+        self.used_cr_numbers_collection = None  # New collection for CR numbers
         self.connect()
 
     def connect(self):
@@ -143,6 +145,7 @@ class MongoDBHandler:
             self.activity_logs_collection = self.db['activity_logs']
             self.broadcast_approvals_collection = self.db['broadcast_approvals']
             self.signal_suggestions_collection = self.db['signal_suggestions']
+            self.used_cr_numbers_collection = self.db['used_cr_numbers'] # New collection
 
             # Create indexes
             self.users_collection.create_index('user_id', unique=True)
@@ -153,6 +156,7 @@ class MongoDBHandler:
             self.activity_logs_collection.create_index([('timestamp', -1)])
             self.broadcast_approvals_collection.create_index('status')
             self.signal_suggestions_collection.create_index('status')
+            self.used_cr_numbers_collection.create_index('cr_number', unique=True) # Index for CR numbers
 
             logger.info("Successfully connected to MongoDB")
         except (ConnectionFailure, ServerSelectionTimeoutError) as e:
@@ -271,11 +275,18 @@ class MongoDBHandler:
     def add_admin(self, user_id: int, role: AdminRole, added_by: int):
         """Add an admin with role"""
         try:
+            # Try to get admin name from users collection
+            user_info = self.users_collection.find_one({'user_id': user_id})
+            admin_name = str(user_id)
+            if user_info:
+                admin_name = user_info.get('first_name') or user_info.get('username') or str(user_id)
+
             self.admins_collection.update_one(
                 {'user_id': user_id},
                 {
                     '$set': {
                         'user_id': user_id,
+                        'name': admin_name, # Store admin name
                         'role': role.value,
                         'added_by': added_by,
                         'added_at': time.time()
@@ -356,17 +367,22 @@ class MongoDBHandler:
         try:
             total_broadcasts = self.activity_logs_collection.count_documents({
                 'user_id': user_id,
-                'action': 'broadcast_sent'
+                'action': {'$in': ['broadcast_sent', 'approved_broadcast_sent']}
             })
             total_templates = self.templates_collection.count_documents({'created_by': user_id})
             total_scheduled = self.scheduled_broadcasts_collection.count_documents({
                 'created_by': user_id
             })
+            total_ratings = self.activity_logs_collection.count_documents({
+                'user_id': user_id,
+                'action': 'signal_approved'
+            })
 
             return {
                 'broadcasts': total_broadcasts,
                 'templates': total_templates,
-                'scheduled': total_scheduled
+                'scheduled': total_scheduled,
+                'ratings': total_ratings
             }
         except Exception as e:
             logger.error(f"Error getting admin stats: {e}")
@@ -468,7 +484,8 @@ class MongoDBHandler:
             logger.error(f"Error getting suggestion: {e}")
             return None
 
-    def update_suggestion_status(self, suggestion_id: str, status: str, reviewed_by: int, reason: str = None):
+    def update_suggestion_status(self, suggestion_id: str, status: str, reviewed_by: int,
+                                 reason: str = None, rating: int = None):
         """Update suggestion status"""
         try:
             from bson.objectid import ObjectId
@@ -479,12 +496,17 @@ class MongoDBHandler:
             }
             if reason:
                 update_data['rejection_reason'] = reason
+            if rating is not None:
+                update_data['rating'] = rating
 
             self.signal_suggestions_collection.update_one(
                 {'_id': ObjectId(suggestion_id)},
                 {'$set': update_data}
             )
-            self.log_activity(reviewed_by, f'signal_{status}', {'suggestion_id': suggestion_id})
+            log_details = {'suggestion_id': suggestion_id}
+            if rating:
+                log_details['rating'] = rating
+            self.log_activity(reviewed_by, f'signal_{status}', log_details)
             return True
         except Exception as e:
             logger.error(f"Error updating suggestion status: {e}")
@@ -625,6 +647,168 @@ class MongoDBHandler:
         except Exception as e:
             logger.error(f"Error cancelling scheduled broadcast: {e}")
             return False
+
+    # New methods for CR Number checks
+    def is_cr_number_used(self, cr_number: str) -> bool:
+        """Check if a CR number has already been used for verification"""
+        try:
+            return self.used_cr_numbers_collection.find_one({'cr_number': cr_number}) is not None
+        except Exception as e:
+            logger.error(f"Error checking CR number {cr_number}: {e}")
+            return False # Fail safe, but log error
+
+    def mark_cr_number_as_used(self, cr_number: str, user_id: int):
+        """Mark a CR number as used by a specific user"""
+        try:
+            self.used_cr_numbers_collection.insert_one({
+                'cr_number': cr_number,
+                'user_id': user_id,
+                'used_at': time.time()
+            })
+            return True
+        except Exception as e:
+            logger.error(f"Error marking CR number {cr_number} as used: {e}")
+            return False
+
+    # New methods for Leaderboards
+    def get_suggester_stats(self, time_frame: str) -> List[Dict]:
+        """Get signal suggester stats for a given time frame (weekly/monthly)"""
+        try:
+            current_time = time.time()
+            if time_frame == 'weekly':
+                start_time = current_time - timedelta(days=7).total_seconds()
+            elif time_frame == 'monthly':
+                start_time = current_time - timedelta(days=30).total_seconds()
+            else:
+                return []
+
+            pipeline = [
+                {
+                    '$match': {
+                        'status': 'approved',
+                        'rating': {'$exists': True},
+                        'reviewed_at': {'$gte': start_time}
+                    }
+                },
+                {
+                    '$group': {
+                        '_id': '$suggested_by',
+                        'suggester_name': {'$first': '$suggester_name'},
+                        'average_rating': {'$avg': '$rating'},
+                        'signal_count': {'$sum': 1}
+                    }
+                },
+                {
+                    '$sort': {
+                        'average_rating': -1,
+                        'signal_count': -1
+                    }
+                },
+                {
+                    '$limit': 10  # Top 10
+                }
+            ]
+            return list(self.signal_suggestions_collection.aggregate(pipeline))
+        except Exception as e:
+            logger.error(f"Error getting suggester stats: {e}")
+            return []
+
+    def get_admin_performance_stats(self, time_frame: str) -> List[Dict]:
+        """Get admin performance stats for a given time frame (weekly)"""
+        try:
+            current_time = time.time()
+            if time_frame == 'weekly':
+                start_time = current_time - timedelta(days=7).total_seconds()
+            else:
+                return []
+
+            pipeline = [
+                {
+                    '$match': {
+                        'timestamp': {'$gte': start_time},
+                        'action': {
+                            '$in': [
+                                'broadcast_sent', 'approved_broadcast_sent',
+                                'broadcast_approved', 'broadcast_rejected',
+                                'signal_approved', 'signal_rejected'
+                            ]
+                        }
+                    }
+                },
+                {
+                    '$group': {
+                        '_id': '$user_id',
+                        'actions': {'$push': '$action'}
+                    }
+                },
+                {
+                    '$lookup': {
+                        'from': 'admins',
+                        'localField': '_id',
+                        'foreignField': 'user_id',
+                        'as': 'admin_info'
+                    }
+                },
+                {
+                    '$unwind': {
+                        'path': '$admin_info',
+                        'preserveNullAndEmptyArrays': False # Only include active admins
+                    }
+                },
+                {
+                    '$project': {
+                        'admin_name': '$admin_info.name',
+                        'user_id': '$_id',
+                        'broadcasts': {
+                            '$size': {
+                                '$filter': {
+                                    'input': '$actions', 'as': 'action',
+                                    'cond': {'$in': ['$$action', ['broadcast_sent', 'approved_broadcast_sent']]}
+                                }
+                            }
+                        },
+                        'approvals': {
+                            '$size': {
+                                '$filter': {
+                                    'input': '$actions', 'as': 'action',
+                                    'cond': {'$in': ['$$action', ['broadcast_approved', 'signal_approved']]}
+                                }
+                            }
+                        },
+                        'ratings': { # Count ratings (same as signal_approved)
+                            '$size': {
+                                '$filter': {
+                                    'input': '$actions', 'as': 'action',
+                                    'cond': {'$in': ['$$action', ['signal_approved']]}
+                                }
+                            }
+                        },
+                        'rejections': {
+                            '$size': {
+                                '$filter': {
+                                    'input': '$actions', 'as': 'action',
+                                    'cond': {'$in': ['$$action', ['broadcast_rejected', 'signal_rejected']]}
+                                }
+                            }
+                        }
+                    }
+                },
+                {
+                    '$addFields': {
+                        # Simple score: 1pt per action
+                        'score': {
+                            '$add': ['$broadcasts', '$approvals', '$ratings', '$rejections']
+                        }
+                    }
+                },
+                {
+                    '$sort': {'score': -1}
+                }
+            ]
+            return list(self.activity_logs_collection.aggregate(pipeline))
+        except Exception as e:
+            logger.error(f"Error getting admin performance stats: {e}")
+            return []
 
     def close(self):
         """Close MongoDB connection"""
@@ -1021,7 +1205,7 @@ class BroadcastBot:
 
         keyboard = [
             [
-                InlineKeyboardButton("✅ Approve & Broadcast", callback_data=f"sig_approve_{suggestion_id}"),
+                InlineKeyboardButton("✅ Approve", callback_data=f"sig_approve_{suggestion_id}"),
                 InlineKeyboardButton("❌ Reject", callback_data=f"sig_reject_{suggestion_id}")
             ]
         ]
@@ -1074,33 +1258,33 @@ class BroadcastBot:
 
         if query.from_user.id not in self.super_admin_ids:
             await query.edit_message_text("❌ Only Super Admins can review suggestions.")
-            return
+            return ConversationHandler.END
 
         action, suggestion_id = query.data.split('_', 2)[1:]
 
         suggestion = self.db.get_suggestion_by_id(suggestion_id)
         if not suggestion:
             await query.edit_message_text("❌ Suggestion not found.")
-            return
+            return ConversationHandler.END
 
         if action == "approve":
-            # Update status
-            self.db.update_suggestion_status(suggestion_id, 'approved', query.from_user.id)
-
-            # Broadcast to all users
-            await self.broadcast_signal(context, suggestion)
-
-            # Notify suggester
-            try:
-                await context.bot.send_message(
-                    chat_id=suggestion['suggested_by'],
-                    text="✅ Your signal suggestion has been approved and broadcasted! Thank you for your contribution."
-                )
-            except:
-                pass
-
-            await query.edit_message_reply_markup(reply_markup=None)
-            await query.message.reply_text("✅ Signal approved and broadcasted to all users!")
+            # Store suggestion ID and ask for rating
+            context.user_data['suggestion_to_rate'] = suggestion_id
+            keyboard = [
+                [
+                    InlineKeyboardButton("⭐", callback_data="sig_rate_1"),
+                    InlineKeyboardButton("⭐⭐", callback_data="sig_rate_2"),
+                    InlineKeyboardButton("⭐⭐⭐", callback_data="sig_rate_3"),
+                    InlineKeyboardButton("⭐⭐⭐⭐", callback_data="sig_rate_4"),
+                    InlineKeyboardButton("⭐⭐⭐⭐⭐", callback_data="sig_rate_5"),
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                "Please rate this signal (1-5 stars) before approving:",
+                reply_markup=reply_markup
+            )
+            return WAITING_SIGNAL_RATING
 
         elif action == "reject":
             self.db.update_suggestion_status(suggestion_id, 'rejected', query.from_user.id)
@@ -1116,15 +1300,56 @@ class BroadcastBot:
 
             await query.edit_message_reply_markup(reply_markup=None)
             await query.message.reply_text("❌ Signal rejected.")
+            return ConversationHandler.END
+
+    async def receive_signal_rating(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Receive signal rating, approve, and broadcast"""
+        query = update.callback_query
+        await query.answer()
+
+        rating = int(query.data.split('_')[-1])
+        suggestion_id = context.user_data.pop('suggestion_to_rate', None)
+
+        if not suggestion_id:
+            await query.edit_message_text("❌ Error: Suggestion ID not found. Please try again.")
+            return ConversationHandler.END
+
+        suggestion = self.db.get_suggestion_by_id(suggestion_id)
+        if not suggestion:
+            await query.edit_message_text("❌ Error: Suggestion not found.")
+            return ConversationHandler.END
+
+        # Update status with rating
+        self.db.update_suggestion_status(suggestion_id, 'approved', query.from_user.id, rating=rating)
+
+        # Broadcast to all users
+        await self.broadcast_signal(context, suggestion)
+
+        # Notify suggester
+        try:
+            await context.bot.send_message(
+                chat_id=suggestion['suggested_by'],
+                text=f"✅ Your signal suggestion has been approved with a rating of {rating} stars and broadcasted! Thank you for your contribution."
+            )
+        except:
+            pass
+
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text(f"✅ Signal approved with {rating} stars and broadcasted to all users!")
+        return ConversationHandler.END
 
     async def broadcast_signal(self, context: ContextTypes.DEFAULT_TYPE, suggestion: Dict):
         """Broadcast approved signal to all users"""
         target_users = self.db.get_all_users()
         message_data = suggestion['message_data']
         suggester = suggestion['suggester_name']
+        rating = suggestion.get('rating') # Get the rating
 
         # Add attribution to message
         attribution = f"\n\n💡 Signal suggested by: {suggester}"
+        if rating:
+            attribution += f"\n⭐ Admin Rating: {'⭐' * rating}"
+
 
         success_count = 0
         failed_count = 0
@@ -1556,7 +1781,7 @@ class BroadcastBot:
         query = update.callback_query
         await query.answer()
 
-        # Check if this is a scheduled broadcast
+        # If this is a scheduled broadcast, finalize it
         if 'scheduled_time' in context.user_data:
             return await self.finalize_scheduled_broadcast(update, context)
 
@@ -1576,6 +1801,7 @@ class BroadcastBot:
             inline_buttons = context.user_data.get('inline_buttons')
             protect_content = context.user_data.get('protect_content', False)
             use_watermark = context.user_data.get('use_watermark', False)
+            watermarked_image = context.user_data.get('watermarked_image')
 
             # Prepare message data
             message_data = {
@@ -1590,10 +1816,19 @@ class BroadcastBot:
                 message_data['content'] = broadcast_message.text
             elif broadcast_message.photo:
                 message_data['type'] = 'photo'
-                if use_watermark and 'watermarked_image' in context.user_data:
-                    # Store watermarked image reference
-                    message_data['file_id'] = broadcast_message.photo[-1].file_id
-                    message_data['is_watermarked'] = True
+                if use_watermark and watermarked_image:
+                    # Send the watermarked image to Telegram to get a file_id
+                    try:
+                        sent_photo = await context.bot.send_photo(
+                            chat_id=query.from_user.id,
+                            photo=watermarked_image,
+                            caption="Generating file_id for approval..."
+                        )
+                        message_data['file_id'] = sent_photo.photo[-1].file_id
+                        await sent_photo.delete() # Clean up
+                    except Exception as e:
+                        logger.error(f"Failed to send/delete watermarked photo for approval: {e}")
+                        message_data['file_id'] = broadcast_message.photo[-1].file_id # Fallback
                 else:
                     message_data['file_id'] = broadcast_message.photo[-1].file_id
                 message_data['caption'] = broadcast_message.caption
@@ -1769,6 +2004,7 @@ class BroadcastBot:
     async def cancel_broadcast(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Cancel broadcast operation"""
         await update.message.reply_text("❌ Operation cancelled.")
+        context.user_data.clear()
         return ConversationHandler.END
 
     async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1881,6 +2117,75 @@ class BroadcastBot:
         except Exception as e:
             logger.error(f"Error in process_scheduled_broadcasts: {e}")
 
+    # New Leaderboard Methods
+    async def broadcast_suggester_leaderboard(self, context: ContextTypes.DEFAULT_TYPE, time_frame: str):
+        """Calculate and broadcast suggester leaderboard"""
+        logger.info(f"Generating suggester leaderboard for: {time_frame}")
+        stats = self.db.get_suggester_stats(time_frame)
+
+        if not stats:
+            logger.info(f"No suggester stats found for {time_frame}.")
+            return
+
+        message = f"🏆 Signal Suggester Leaderboard ({time_frame.title()})\n\n"
+        for i, stat in enumerate(stats):
+            message += (
+                f"{i + 1}. {stat['suggester_name']}\n"
+                f"   Avg Rating: {stat['average_rating']:.2f} ⭐ ({stat['signal_count']} signals)\n\n"
+            )
+
+        target_users = self.db.get_all_users()
+        for user_id in target_users:
+            try:
+                await context.bot.send_message(chat_id=user_id, text=message)
+                await asyncio.sleep(0.05)
+            except Exception as e:
+                logger.error(f"Failed to send suggester leaderboard to {user_id}: {e}")
+        logger.info(f"Broadcasted suggester leaderboard to {len(target_users)} users.")
+
+    async def broadcast_admin_leaderboard(self, context: ContextTypes.DEFAULT_TYPE):
+        """Calculate and broadcast admin performance"""
+        logger.info("Generating admin performance leaderboard")
+        stats = self.db.get_admin_performance_stats('weekly')
+
+        if not stats:
+            logger.info("No admin performance stats found.")
+            return
+
+        message = "📊 Admin Weekly Performance\n\n"
+        for i, stat in enumerate(stats):
+            name = stat.get('admin_name', f"ID: {stat['user_id']}")
+            message += (
+                f"{i + 1}. {name}\n"
+                f"   Score: {stat['score']}\n"
+                f"   (Broadcasts: {stat['broadcasts']}, Ratings: {stat['ratings']}, Rejections: {stat['rejections']})\n\n"
+            )
+
+        target_admins = self.db.get_all_admin_ids()
+        for admin_id in target_admins:
+            try:
+                await context.bot.send_message(chat_id=admin_id, text=message)
+                await asyncio.sleep(0.05)
+            except Exception as e:
+                logger.error(f"Failed to send admin leaderboard to {admin_id}: {e}")
+        logger.info(f"Broadcasted admin leaderboard to {len(target_admins)} admins.")
+
+
+    async def run_leaderboards_job(self, context: ContextTypes.DEFAULT_TYPE):
+        """Job to run weekly/monthly leaderboards"""
+        logger.info("Running weekly leaderboard job...")
+        today = datetime.now(timezone.utc)
+
+        # 1. Weekly Suggester Leaderboard
+        await self.broadcast_suggester_leaderboard(context, 'weekly')
+
+        # 2. Monthly Suggester Leaderboard (if first Sunday of month)
+        if today.day <= 7:
+            await self.broadcast_suggester_leaderboard(context, 'monthly')
+
+        # 3. Weekly Admin Leaderboard
+        await self.broadcast_admin_leaderboard(context)
+
     def calculate_next_time(self, current_time: float, repeat: str) -> float:
         """Calculate next scheduled time based on repeat pattern"""
         dt = datetime.fromtimestamp(current_time)
@@ -1890,8 +2195,10 @@ class BroadcastBot:
         elif repeat == 'weekly':
             next_dt = dt + timedelta(weeks=1)
         elif repeat == 'monthly':
+            # A simple approximation
             next_dt = dt + timedelta(days=30)
         else:
+            # Should not happen if 'repeat' is 'once'
             next_dt = dt
 
         return next_dt.timestamp()
@@ -2072,6 +2379,16 @@ class BroadcastBot:
             fallbacks=[CommandHandler("cancel", self.cancel_broadcast)]
         )
 
+        # New handler for signal reviews (with rating)
+        signal_review_handler = ConversationHandler(
+            entry_points=[CallbackQueryHandler(self.handle_signal_review, pattern=r"^sig_(approve|reject)_")],
+            states={
+                WAITING_SIGNAL_RATING: [CallbackQueryHandler(self.receive_signal_rating, pattern=r"^sig_rate_")]
+            },
+            fallbacks=[CommandHandler("cancel", self.cancel_broadcast)],
+            conversation_timeout=300 # 5 minutes to rate
+        )
+
         # Basic commands
         application.add_handler(CommandHandler("start", self.start))
         application.add_handler(CommandHandler("help", self.help_command))
@@ -2084,7 +2401,7 @@ class BroadcastBot:
         application.add_handler(CommandHandler("approvals", self.list_approvals))
         application.add_handler(CommandHandler("signals", self.list_signal_suggestions))
         application.add_handler(CallbackQueryHandler(self.handle_approval_review, pattern="^app_"))
-        application.add_handler(CallbackQueryHandler(self.handle_signal_review, pattern="^sig_"))
+        application.add_handler(signal_review_handler) # Add new signal review handler
 
         # Admin management
         application.add_handler(add_admin_handler)
@@ -2126,6 +2443,14 @@ class BroadcastBot:
             first=10
         )
 
+        # New: Leaderboard job (Sunday at 00:00 UTC)
+        utc_midnight = time(hour=0, minute=0, tzinfo=timezone.utc)
+        application.job_queue.run_daily(
+            self.run_leaderboards_job,
+            time=utc_midnight,
+            days=(6,)  # 0=Monday, 6=Sunday
+        )
+
         return application
 
     async def handle_greeting(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2134,6 +2459,13 @@ class BroadcastBot:
 
     async def subscribe_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Start the subscription conversation"""
+        user_id = update.effective_user.id
+        
+        # Check if already subscribed
+        if self.db.is_subscriber(user_id):
+            await update.message.reply_text("✅ You are already a subscriber!")
+            return ConversationHandler.END
+
         keyboard = [
             [InlineKeyboardButton("Deriv VIP", callback_data="vip_deriv")],
             [InlineKeyboardButton("Currencies VIP", callback_data="vip_currencies")],
@@ -2188,7 +2520,20 @@ class BroadcastBot:
     async def receive_cr_number(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle CR number and check against the list"""
         cr_number = update.message.text.strip().upper()
+
+        # Check if CR number is already used
+        if self.db.is_cr_number_used(cr_number):
+            await update.message.reply_text(
+                "❌ This CR number has already been used for verification. Each CR number can only be used once.\n\n"
+                "If you believe this is an error, please contact an admin."
+            )
+            return ConversationHandler.END
+
+        # Check if CR number is in the valid list
         if cr_number in self.cr_numbers:
+            # Mark as used
+            self.db.mark_cr_number_as_used(cr_number, update.effective_user.id)
+            
             await update.message.reply_text(
                 "I can verify that you are tagged under us. Please proceed to fund your account with a minimum of $50 and send me a screenshot."
             )
@@ -2206,10 +2551,14 @@ class BroadcastBot:
 
         try:
             text = pytesseract.image_to_string(Image.open(io.BytesIO(photo_bytes)))
-            # A simple regex to find numbers with a dollar sign
-            matches = re.findall(r'\$?(\d+\.\d{2})', text)
+            # A simple regex to find numbers with a dollar sign or just numbers
+            matches = re.findall(r'\$?(\d[\d,]*\.\d{2})', text)
+            
             if matches:
-                balance = float(matches[0])
+                # Clean comma from number
+                balance_str = matches[0].replace(',', '')
+                balance = float(balance_str)
+                
                 if balance >= 50:
                     user_id = update.effective_user.id
                     self.db.add_subscriber(user_id)
@@ -2219,7 +2568,7 @@ class BroadcastBot:
                     return ConversationHandler.END
                 else:
                     await update.message.reply_text(
-                        "The balance in the screenshot is less than $50. Please fund your account and try again."
+                        f"The detected balance (${balance}) is less than $50. Please fund your account and try again."
                     )
                     return WAITING_SCREENSHOT
             else:
@@ -2318,7 +2667,7 @@ class BroadcastBot:
             self.db.add_subscriber(user_id)
             self.db.log_activity(admin_id, 'vip_approved', {'user_id': user_id})
             
-            await query.edit_message_text(f"{query.message.text}\n\n--- ✅ Approved by {admin_id} ---")
+            await query.edit_message_text(f"{query.message.text}\n\n--- ✅ Approved by {query.from_user.first_name or admin_id} ---")
             
             try:
                 await context.bot.send_message(
@@ -2332,6 +2681,8 @@ class BroadcastBot:
 
         elif action == "decline":
             context.user_data['user_to_decline'] = user_id
+            context.user_data['admin_name'] = query.from_user.first_name or admin_id
+            context.user_data['original_message'] = query.message.text
             await query.edit_message_text("Please enter the reason for declining this request.")
             return WAITING_DECLINE_REASON
 
@@ -2340,6 +2691,9 @@ class BroadcastBot:
         admin_id = update.effective_user.id
         reason = update.message.text
         user_id_to_decline = context.user_data.get('user_to_decline')
+        admin_name = context.user_data.get('admin_name', admin_id)
+        original_message = context.user_data.get('original_message', "VIP Request")
+
 
         if not user_id_to_decline:
             await update.message.reply_text("Error: Could not find the user to decline. Please try again.")
@@ -2357,8 +2711,22 @@ class BroadcastBot:
         
         await update.message.reply_text(f"The user {user_id_to_decline} has been notified of the decline.")
         
+        # Restore original admin message with decline info
+        try:
+            original_message_id = update.message.reply_to_message.message_id
+            await context.bot.edit_message_text(
+                chat_id=admin_id,
+                message_id=original_message_id,
+                text=f"{original_message}\n\n--- ❌ Declined by {admin_name} ---"
+            )
+        except Exception as e:
+             logger.error(f"Failed to edit original decline message: {e}")
+
+
         # Clean up context
         context.user_data.pop('user_to_decline', None)
+        context.user_data.pop('admin_name', None)
+        context.user_data.pop('original_message', None)
         return ConversationHandler.END
         
     async def receive_schedule_time(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2367,24 +2735,23 @@ class BroadcastBot:
             # Simple parsing for '1h 30m' or '2d'
             time_str = update.message.text.lower()
             delta = timedelta()
-            parts = time_str.replace('d', 'd ').replace('h', 'h ').replace('m', 'm ').split()
             
-            val = 0
-            for part in parts:
-                if part.isdigit():
-                    val = int(part)
-                elif 'd' in part:
-                    delta += timedelta(days=val)
-                elif 'h' in part:
-                    delta += timedelta(hours=val)
-                elif 'm' in part:
-                    delta += timedelta(minutes=val)
+            # Regex to find time parts
+            parts = re.findall(r'(\d+)\s*(d|h|m)', time_str)
             
-            if delta == timedelta():
+            if parts:
+                for val_str, unit in parts:
+                    val = int(val_str)
+                    if 'd' in unit:
+                        delta += timedelta(days=val)
+                    elif 'h' in unit:
+                        delta += timedelta(hours=val)
+                    elif 'm' in unit:
+                        delta += timedelta(minutes=val)
+                scheduled_time = datetime.now() + delta
+            else:
                 # Try parsing as absolute time
                 scheduled_time = datetime.fromisoformat(time_str)
-            else:
-                scheduled_time = datetime.now() + delta
 
             context.user_data['scheduled_time'] = scheduled_time.timestamp()
 
@@ -2395,7 +2762,11 @@ class BroadcastBot:
                 [InlineKeyboardButton("🔁 Monthly", callback_data="repeat_monthly")]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
-            await update.message.reply_text("Set repeat interval:", reply_markup=reply_markup)
+            await update.message.reply_text(
+                f"Time set for: {scheduled_time.strftime('%Y-%m-%d %H:%M')}\n\n"
+                "Set repeat interval:", 
+                reply_markup=reply_markup
+            )
             return WAITING_SCHEDULE_REPEAT
         except ValueError:
             await update.message.reply_text("Invalid time format. Use 'YYYY-MM-DD HH:MM' or '1h 30m'.")
@@ -2410,6 +2781,85 @@ class BroadcastBot:
         context.user_data['repeat'] = repeat
 
         return await self.ask_target_audience(query, context, scheduled=True)
+
+    async def finalize_scheduled_broadcast(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Save the scheduled broadcast to the database"""
+        query = update.callback_query # 'update' is a query here
+        user_id = query.from_user.id
+        
+        target_map = {
+            'target_all': 'all',
+            'target_subscribers': 'subscribers',
+            'target_nonsubscribers': 'nonsubscribers',
+            'target_admins': 'admins'
+        }
+        target = target_map.get(query.data, 'all')
+        
+        broadcast_message = context.user_data['broadcast_message']
+        inline_buttons = context.user_data.get('inline_buttons')
+        protect_content = context.user_data.get('protect_content', False)
+        use_watermark = context.user_data.get('use_watermark', False)
+        watermarked_image = context.user_data.get('watermarked_image')
+
+        # Prepare message data
+        message_data = {
+            'type': 'text',
+            'content': None,
+            'inline_buttons': inline_buttons,
+            'protect_content': protect_content
+        }
+
+        if broadcast_message.text:
+            message_data['type'] = 'text'
+            message_data['content'] = broadcast_message.text
+        elif broadcast_message.photo:
+            message_data['type'] = 'photo'
+            if use_watermark and watermarked_image:
+                try:
+                    sent_photo = await context.bot.send_photo(
+                        chat_id=user_id,
+                        photo=watermarked_image,
+                        caption="Generating file_id for schedule..."
+                    )
+                    message_data['file_id'] = sent_photo.photo[-1].file_id
+                    await sent_photo.delete()
+                except Exception as e:
+                    logger.error(f"Failed to send/delete watermarked photo for schedule: {e}")
+                    message_data['file_id'] = broadcast_message.photo[-1].file_id
+            else:
+                message_data['file_id'] = broadcast_message.photo[-1].file_id
+            message_data['caption'] = broadcast_message.caption
+        elif broadcast_message.video:
+            message_data['type'] = 'video'
+            message_data['file_id'] = broadcast_message.video.file_id
+            message_data['caption'] = broadcast_message.caption
+        elif broadcast_message.document:
+            message_data['type'] = 'document'
+            message_data['file_id'] = broadcast_message.document.file_id
+            message_data['caption'] = broadcast_message.caption
+
+        # Schedule it
+        scheduled_id = self.db.schedule_broadcast(
+            message_data,
+            context.user_data['scheduled_time'],
+            context.user_data['repeat'],
+            user_id,
+            target
+        )
+
+        if scheduled_id:
+            scheduled_dt = datetime.fromtimestamp(context.user_data['scheduled_time'])
+            await query.edit_message_text(
+                f"✅ Broadcast scheduled successfully!\n\n"
+                f"Time: {scheduled_dt.strftime('%Y-%m-%d %H:%M')}\n"
+                f"Target: {target.title()}\n"
+                f"Repeat: {context.user_data['repeat'].title()}"
+            )
+        else:
+            await query.edit_message_text("❌ Failed to schedule broadcast. Please try again.")
+
+        context.user_data.clear()
+        return ConversationHandler.END
 
     async def save_template_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Start save template conversation"""
@@ -2478,6 +2928,9 @@ class BroadcastBot:
         try:
             user_id = int(update.message.text)
             context.user_data['new_admin_id'] = user_id
+            
+            # Add user to db to fetch name
+            self.db.add_user(user_id) 
 
             keyboard = [
                 [InlineKeyboardButton("Broadcaster", callback_data="role_broadcaster")],
@@ -2538,10 +2991,9 @@ class BroadcastBot:
             await update.message.reply_text("No admins found.")
             return
 
-        admin_list = "\n".join([f"• {a['user_id']} ({a['role']})" for a in admins])
+        admin_list = "\n".join([f"• {a.get('name', a['user_id'])} ({a['role']})" for a in admins])
         await update.message.reply_text(f"👨‍💼 Admins:\n{admin_list}")
 
-    # <-- MODIFICATION: Only super admins can view logs, and only the last 10 -->
     async def view_logs(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /logs command"""
         user_id = update.effective_user.id
@@ -2559,7 +3011,12 @@ class BroadcastBot:
             f"| {log['user_id']} | {log['action']} | {log.get('details', {})}"
             for log in logs
         ])
-        await update.message.reply_text(f"📜 Last 10 Activity Logs:\n{log_list}")
+        
+        message = f"📜 Last 10 Activity Logs:\n\n{log_list}"
+        if len(message) > 4096:
+            message = message[:4090] + "..."
+            
+        await update.message.reply_text(message)
 
     async def my_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /mystats command"""
@@ -2573,7 +3030,8 @@ class BroadcastBot:
             f"📊 Your Statistics\n\n"
             f"📢 Broadcasts Sent: {stats.get('broadcasts', 0)}\n"
             f"📝 Templates Created: {stats.get('templates', 0)}\n"
-            f"⏰ Broadcasts Scheduled: {stats.get('scheduled', 0)}"
+            f"⏰ Broadcasts Scheduled: {stats.get('scheduled', 0)}\n"
+            f"⭐ Signals Rated: {stats.get('ratings', 0)}"
         )
         await update.message.reply_text(stats_text)
 
@@ -2603,11 +3061,12 @@ class BroadcastBot:
             return
 
         broadcast_list = "\n".join([
-            f"• ID: {str(b['_id'])[-6:]} | "
+            f"• ID: {str(b['_id'])} | "
             f"{datetime.fromtimestamp(b['scheduled_time']).strftime('%Y-%m-%d %H:%M')}"
             for b in broadcasts
         ])
-        await update.message.reply_text(f"⏰ Scheduled Broadcasts:\n{broadcast_list}")
+        await update.message.reply_text(f"⏰ Scheduled Broadcasts:\n{broadcast_list}\n\n"
+                                      f"To cancel, use /cancel_scheduled <ID>")
 
     async def cancel_scheduled_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /cancel_scheduled command"""
@@ -2620,6 +3079,15 @@ class BroadcastBot:
             return
 
         broadcast_id = context.args[0]
+        
+        try:
+            # Validate ID format
+            from bson.objectid import ObjectId
+            ObjectId(broadcast_id)
+        except Exception:
+            await update.message.reply_text(f"❌ Invalid broadcast ID format.")
+            return
+
         if self.db.cancel_scheduled_broadcast(broadcast_id, update.effective_user.id):
             await update.message.reply_text(f"✅ Scheduled broadcast {broadcast_id} cancelled.")
         else:
