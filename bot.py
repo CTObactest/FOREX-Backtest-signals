@@ -1323,12 +1323,20 @@ class BroadcastBot:
         suggestion_id = context.user_data.pop('suggestion_to_rate', None)
 
         if not suggestion_id:
-            await query.edit_message_text("❌ Error: Suggestion ID not found. Please try again.")
+            error_text = "❌ Error: Suggestion ID not found. Please try again."
+            if query.message.text:
+                await query.edit_message_text(text=error_text)
+            elif query.message.caption:
+                await query.edit_message_caption(caption=error_text)
             return ConversationHandler.END
 
         suggestion = self.db.get_suggestion_by_id(suggestion_id)
         if not suggestion:
-            await query.edit_message_text("❌ Error: Suggestion not found.")
+            error_text = "❌ Error: Suggestion not found."
+            if query.message.text:
+                await query.edit_message_text(text=error_text)
+            elif query.message.caption:
+                await query.edit_message_caption(caption=error_text)
             return ConversationHandler.END
 
         # Update status with rating
