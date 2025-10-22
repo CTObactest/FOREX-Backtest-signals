@@ -1279,12 +1279,24 @@ class BroadcastBot:
                     InlineKeyboardButton("⭐⭐⭐⭐⭐", callback_data="sig_rate_5"),
                 ]
             ]
+            # ...
             reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text(
-                "Please rate this signal (1-5 stars) before approving:",
-                reply_markup=reply_markup
-            )
+            
+            new_prompt = "Please rate this signal (1-5 stars) before approving:"
+            
+            if query.message.text:
+                await query.edit_message_text(
+                    text=new_prompt,
+                    reply_markup=reply_markup
+                )
+            elif query.message.caption:
+                await query.edit_message_caption(
+                    caption=new_prompt,
+                    reply_markup=reply_markup
+                )
+            
             return WAITING_SIGNAL_RATING
+            # ...
 
         elif action == "reject":
             self.db.update_suggestion_status(suggestion_id, 'rejected', query.from_user.id)
