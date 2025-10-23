@@ -714,11 +714,13 @@ class MongoDBHandler:
             return []
 
     def get_admin_performance_stats(self, time_frame: str) -> List[Dict]:
-        """Get admin performance stats for a given time frame (weekly)"""
+        """Get admin performance stats for a given time frame (weekly/monthly)"""
         try:
             current_time = time.time()
             if time_frame == 'weekly':
                 start_time = current_time - timedelta(days=7).total_seconds()
+            elif time_frame == 'monthly':
+                start_time = current_time - timedelta(days=30).total_seconds()
             else:
                 return []
 
@@ -775,7 +777,7 @@ class MongoDBHandler:
                                 }
                             }
                         },
-                        'ratings': { # Count ratings (same as signal_approved)
+                        'ratings': { # Count ratings (subset of approvals)
                             '$size': {
                                 '$filter': {
                                     'input': '$actions', 'as': 'action',
@@ -795,9 +797,9 @@ class MongoDBHandler:
                 },
                 {
                     '$addFields': {
-                        # Simple score: 1pt per action
+                        # Score: broadcasts + approvals (which includes ratings) + rejections
                         'score': {
-                            '$add': ['$broadcasts', '$approvals', '$ratings', '$rejections']
+                            '$add': ['$broadcasts', '$approvals', '$rejections']
                         }
                     }
                 },
@@ -2169,22 +2171,73 @@ class BroadcastBot:
                 logger.error(f"Failed to send suggester leaderboard to {user_id}: {e}")
         logger.info(f"Broadcasted suggester leaderboard to {len(target_users)} users.")
 
-    async def broadcast_admin_leaderboard(self, context: ContextTypes.DEFAULT_TYPE):
+    async def _get_admin_performance_comment(self, score: int, percentage: float) -> str:
+        """Generate a qualitative comment on admin performance"""
+        if score == 0:
+            return "Comment: No recorded activity this week."
+        
+        if score > 15:
+            activity_level = "Exceptional activity"
+        elif score > 8:
+            activity_level = "High activity"
+        elif score > 3:
+            activity_level = "Good activity"
+        else:
+            activity_level = "Low activity"
+
+        if percentage >= 95:
+            quality_level = "excellent results."
+        elif percentage >= 80:
+            quality_level = "great results."
+        elif percentage >= 60:
+            quality_level = "solid results."
+        elif percentage >= 40:
+            quality_level = "mixed results. Room for improvement."
+        else:
+            quality_level = "needs focus. A high ratio of rejections."
+
+        return f"Comment: {activity_level} with {quality_level}"
+
+    async def broadcast_admin_leaderboard(self, context: ContextTypes.DEFAULT_TYPE, time_frame: str):
         """Calculate and broadcast admin performance"""
-        logger.info("Generating admin performance leaderboard")
-        stats = self.db.get_admin_performance_stats('weekly')
+        logger.info(f"Generating admin performance leaderboard for {time_frame}")
+        stats = self.db.get_admin_performance_stats(time_frame)
 
         if not stats:
-            logger.info("No admin performance stats found.")
+            logger.info(f"No admin performance stats found for {time_frame}.")
             return
 
-        message = "📊 Admin Weekly Performance\n\n"
+        message = f"📊 Admin {time_frame.title()} Performance\n\n"
         for i, stat in enumerate(stats):
             name = stat.get('admin_name', f"ID: {stat['user_id']}")
+            score = stat.get('score', 0)
+            broadcasts = stat.get('broadcasts', 0)
+            approvals = stat.get('approvals', 0) # This field is from the pipeline
+            ratings = stat.get('ratings', 0)     # This is a sub-metric of approvals
+            rejections = stat.get('rejections', 0)
+            
+            # Total positive actions = broadcasts + approvals (which includes ratings)
+            total_positive_actions = broadcasts + approvals
+            
+            # Total actions = positive + negative = (broadcasts + approvals) + rejections
+            # This should match the (new) score
+            total_actions = score 
+
+            if total_actions > 0:
+                percentage_rating = (total_positive_actions / total_actions) * 100
+            else:
+                percentage_rating = 0 # No actions
+
+            # Generate performance comment
+            comment = await self._get_admin_performance_comment(score, percentage_rating)
+
             message += (
                 f"{i + 1}. {name}\n"
-                f"   Score: {stat['score']}\n"
-                f"   (Broadcasts: {stat['broadcasts']}, Ratings: {stat['ratings']}, Rejections: {stat['rejections']})\n\n"
+                f"   Score: {score}\n"
+                f"   Positive Rating: {percentage_rating:.2f}%\n"
+                f"   Details (Broadcasts: {broadcasts}, Approvals: {approvals}, Rejections: {rejections})\n"
+                f"   (Signals Rated: {ratings})\n"
+                f"   {comment}\n\n"
             )
 
         target_admins = self.db.get_all_admin_ids()
@@ -2204,13 +2257,15 @@ class BroadcastBot:
 
         # 1. Weekly Suggester Leaderboard
         await self.broadcast_suggester_leaderboard(context, 'weekly')
+        
+        # 2. Weekly Admin Leaderboard
+        await self.broadcast_admin_leaderboard(context, 'weekly')
 
-        # 2. Monthly Suggester Leaderboard (if first Sunday of month)
+        # 3. Monthly Leaderboards (if first Sunday of month)
         if today.day <= 7:
             await self.broadcast_suggester_leaderboard(context, 'monthly')
+            await self.broadcast_admin_leaderboard(context, 'monthly')
 
-        # 3. Weekly Admin Leaderboard
-        await self.broadcast_admin_leaderboard(context)
 
     def calculate_next_time(self, current_time: float, repeat: str) -> float:
         """Calculate next scheduled time based on repeat pattern"""
