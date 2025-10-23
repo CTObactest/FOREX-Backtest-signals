@@ -2174,7 +2174,7 @@ class BroadcastBot:
     async def _get_admin_performance_comment(self, score: int, percentage: float) -> str:
         """Generate a brutally honest comment on admin performance"""
         if score == 0:
-            return "Comment: No activity recorded — you completely dropped the ball this week."
+            return "Comment: No activity recorded — This level of performance is unacceptable. You’re failing to meet even the minimum expectations. Either improve immediately or risk losing relevance in the team.."
 
         if score > 15:
             activity_level = "Outstanding performance — you're carrying the team."
@@ -2183,7 +2183,7 @@ class BroadcastBot:
         elif score > 3:
             activity_level = "Average effort — you’re doing the bare minimum."
         else:
-            activity_level = "Poor activity — your contribution this week is disappointing."
+            activity_level = "Poor activity — your contribution is disappointing."
 
         if percentage >= 95:
             quality_level = "Flawless execution. Keep setting the pace for everyone else."
