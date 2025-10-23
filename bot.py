@@ -2172,31 +2172,32 @@ class BroadcastBot:
         logger.info(f"Broadcasted suggester leaderboard to {len(target_users)} users.")
 
     async def _get_admin_performance_comment(self, score: int, percentage: float) -> str:
-        """Generate a qualitative comment on admin performance"""
+        """Generate a brutally honest comment on admin performance"""
         if score == 0:
-            return "Comment: No recorded activity this week."
-        
+            return "Comment: No activity recorded — you completely dropped the ball this week."
+
         if score > 15:
-            activity_level = "Exceptional activity"
+            activity_level = "Outstanding performance — you're carrying the team."
         elif score > 8:
-            activity_level = "High activity"
+            activity_level = "Strong activity — solid effort but still room to push harder."
         elif score > 3:
-            activity_level = "Good activity"
+            activity_level = "Average effort — you’re doing the bare minimum."
         else:
-            activity_level = "Low activity"
+            activity_level = "Poor activity — your contribution this week is disappointing."
 
         if percentage >= 95:
-            quality_level = "excellent results."
+            quality_level = "Flawless execution. Keep setting the pace for everyone else."
         elif percentage >= 80:
-            quality_level = "great results."
+            quality_level = "Good results, but you can’t relax — push for consistency."
         elif percentage >= 60:
-            quality_level = "solid results."
+            quality_level = "Mediocre output. You’re slipping into comfort mode."
         elif percentage >= 40:
-            quality_level = "mixed results. Room for improvement."
+            quality_level = "Weak performance. You’re not meeting expectations."
         else:
-            quality_level = "needs focus. A high ratio of rejections."
+            quality_level = "Unacceptable results — you’re failing the company and the team."
 
-        return f"Comment: {activity_level} with {quality_level}"
+            return f"Comment: {activity_level} {quality_level}"
+
 
     async def broadcast_admin_leaderboard(self, context: ContextTypes.DEFAULT_TYPE, time_frame: str):
         """Calculate and broadcast admin performance"""
