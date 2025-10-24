@@ -51,7 +51,8 @@ WAITING_SIGNAL_MESSAGE = 11
     WAITING_ACCOUNT_NUMBER,
     WAITING_TELEGRAM_ID,
     WAITING_DECLINE_REASON,
-    WAITING_SIGNAL_RATING,  # New state for rating signals
+    WAITING_SIGNAL_RATING,
+    WAITING_SIGNAL_REJECTION_REASON,# New state for rating signals
 ) = range(12, 24)
 
 
@@ -1301,20 +1302,23 @@ class BroadcastBot:
             # ...
 
         elif action == "reject":
-            self.db.update_suggestion_status(suggestion_id, 'rejected', query.from_user.id)
-
-            # Notify suggester
-            try:
-                await context.bot.send_message(
-                    chat_id=suggestion['suggested_by'],
-                    text="❌ Your signal suggestion was not approved at this time. Thank you for your submission."
+            # Store suggestion ID and ask for rejection reason
+            context.user_data['suggestion_to_reject'] = suggestion_id
+            
+            new_prompt = "Please provide a reason for rejecting this signal:"
+            
+            if query.message.text:
+                await query.edit_message_text(
+                    text=new_prompt,
+                    reply_markup=None # Remove buttons
                 )
-            except:
-                pass
-
-            await query.edit_message_reply_markup(reply_markup=None)
-            await query.message.reply_text("❌ Signal rejected.")
-            return ConversationHandler.END
+            elif query.message.caption:
+                await query.edit_message_caption(
+                    caption=new_prompt,
+                    reply_markup=None # Remove buttons
+                )
+            
+            return WAITING_SIGNAL_REJECTION_REASON
 
     async def receive_signal_rating(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Receive signal rating, approve, and broadcast"""
