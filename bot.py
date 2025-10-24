@@ -1367,6 +1367,41 @@ class BroadcastBot:
         await query.message.reply_text(f"✅ Signal approved with {rating} stars and broadcasted to all users!")
         return ConversationHandler.END
 
+    async def receive_signal_rejection_reason(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Receive signal rejection reason, update status, and notify suggester"""
+        reason = update.message.text
+        suggestion_id = context.user_data.pop('suggestion_to_reject', None)
+        admin_user = update.effective_user
+
+        if not suggestion_id:
+            await update.message.reply_text("❌ Error: Suggestion ID not found. Please try again.")
+            return ConversationHandler.END
+
+        suggestion = self.db.get_suggestion_by_id(suggestion_id)
+        if not suggestion:
+            await update.message.reply_text("❌ Error: Suggestion not found.")
+            return ConversationHandler.END
+
+        # Update status with rejection reason
+        self.db.update_suggestion_status(
+            suggestion_id, 
+            'rejected', 
+            admin_user.id, 
+            reason=reason
+        )
+
+        # Notify suggester
+        try:
+            await context.bot.send_message(
+                chat_id=suggestion['suggested_by'],
+                text=f"❌ Your signal suggestion was not approved.\n\nReason: {reason}"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to notify suggester {suggestion['suggested_by']} of rejection: {e}")
+
+        await update.message.reply_text(f"❌ Signal rejected and reason recorded.")
+        return ConversationHandler.END
+
     async def broadcast_signal(self, context: ContextTypes.DEFAULT_TYPE, suggestion: Dict):
         """Broadcast approved signal to all users"""
         target_users = self.db.get_all_users()
