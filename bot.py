@@ -53,7 +53,7 @@ WAITING_SIGNAL_MESSAGE = 11
     WAITING_DECLINE_REASON,
     WAITING_SIGNAL_RATING,
     WAITING_SIGNAL_REJECTION_REASON,# New state for rating signals
-) = range(12, 24)
+) = range(12, 25)
 
 
 class AdminRole(Enum):
