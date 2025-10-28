@@ -714,6 +714,7 @@ class MongoDBHandler:
             logger.error(f"Error getting suggester stats: {e}")
             return []
 
+    # MODIFIED FUNCTION
     def get_admin_performance_stats(self, time_frame: str) -> List[Dict]:
         """Get admin performance stats for a given time frame (weekly/monthly)"""
         try:
@@ -726,42 +727,50 @@ class MongoDBHandler:
                 return []
 
             pipeline = [
-                {
-                    '$match': {
-                        'timestamp': {'$gte': start_time},
-                        'action': {
-                            '$in': [
-                                'broadcast_sent', 'approved_broadcast_sent',
-                                'broadcast_approved', 'broadcast_rejected',
-                                'signal_approved', 'signal_rejected'
-                            ]
-                        }
-                    }
-                },
-                {
-                    '$group': {
-                        '_id': '$user_id',
-                        'actions': {'$push': '$action'}
-                    }
-                },
-                {
-                    '$lookup': {
-                        'from': 'admins',
-                        'localField': '_id',
-                        'foreignField': 'user_id',
-                        'as': 'admin_info'
-                    }
-                },
-                {
-                    '$unwind': {
-                        'path': '$admin_info',
-                        'preserveNullAndEmptyArrays': False # Only include active admins
-                    }
-                },
-                {
+                { # 1. Start with all admins
                     '$project': {
-                        'admin_name': '$admin_info.name',
-                        'user_id': '$_id',
+                        'user_id': '$user_id',
+                        'admin_name': '$name'
+                    }
+                },
+                { # 2. Look up their activities in the given time frame
+                    '$lookup': {
+                        'from': 'activity_logs',
+                        'let': {'admin_user_id': '$user_id'},
+                        'pipeline': [
+                            {
+                                '$match': {
+                                    '$expr': {
+                                        '$and': [
+                                            {'$eq': ['$user_id', '$$admin_user_id']},
+                                            {'$gte': ['$timestamp', start_time]},
+                                            {'$in': ['$action', [
+                                                'broadcast_sent', 'approved_broadcast_sent',
+                                                'broadcast_approved', 'broadcast_rejected',
+                                                'signal_approved', 'signal_rejected'
+                                            ]]}
+                                        ]
+                                    }
+                                }
+                            },
+                            {
+                                '$project': {'action': 1} # Only need the action field
+                            }
+                        ],
+                        'as': 'activities'
+                    }
+                },
+                { # 3. Project the counts
+                    '$project': {
+                        'admin_name': '$admin_name',
+                        'user_id': '$user_id',
+                        'actions': '$activities.action', # Extract the list of action strings
+                    }
+                },
+                { # 4. Calculate stats based on the 'actions' array
+                    '$project': {
+                        'admin_name': '$admin_name',
+                        'user_id': '$user_id',
                         'broadcasts': {
                             '$size': {
                                 '$filter': {
@@ -796,7 +805,7 @@ class MongoDBHandler:
                         }
                     }
                 },
-                {
+                { # 5. Add score field
                     '$addFields': {
                         # Score: broadcasts + approvals (which includes ratings) + rejections
                         'score': {
@@ -804,11 +813,12 @@ class MongoDBHandler:
                         }
                     }
                 },
-                {
+                { # 6. Sort
                     '$sort': {'score': -1}
                 }
             ]
-            return list(self.activity_logs_collection.aggregate(pipeline))
+            # Run this aggregation on the 'admins_collection' to include all admins
+            return list(self.admins_collection.aggregate(pipeline))
         except Exception as e:
             logger.error(f"Error getting admin performance stats: {e}")
             return []
@@ -2210,10 +2220,11 @@ class BroadcastBot:
                 logger.error(f"Failed to send suggester leaderboard to {user_id}: {e}")
         logger.info(f"Broadcasted suggester leaderboard to {len(target_users)} users.")
 
-    async def _get_admin_performance_comment(self, score: int, percentage: float) -> str:
-        """Generate a brutally honest comment on admin performance"""
+    # MODIFIED FUNCTION
+    async def _get_admin_performance_comment(self, score: int) -> str:
+        """Generate a brutally honest comment on admin performance based ONLY on score"""
         if score == 0:
-            return "Comment: No activity recorded — This level of performance is unacceptable. You’re failing to meet even the minimum expectations. Either improve immediately or risk losing relevance in the team.."
+            return "Comment: No activity recorded — This level of performance is unacceptable. You’re failing to meet even the minimum expectations. Either improve immediately or risk losing relevance in the team.." #
 
         if score > 15:
             activity_level = "Outstanding performance — you're carrying the team."
@@ -2221,23 +2232,12 @@ class BroadcastBot:
             activity_level = "Strong activity — solid effort but still room to push harder."
         elif score > 3:
             activity_level = "Average effort — you’re doing the bare minimum."
-        else:
+        else: # score is 1-3
             activity_level = "Poor activity — your contribution is disappointing."
 
-        if percentage >= 95:
-            quality_level = "Flawless execution. Keep setting the pace for everyone else."
-        elif percentage >= 80:
-            quality_level = "Good results, but you can’t relax — push for consistency."
-        elif percentage >= 60:
-            quality_level = "Mediocre output. You’re slipping into comfort mode."
-        elif percentage >= 40:
-            quality_level = "Weak performance. You’re not meeting expectations."
-        else:
-            quality_level = "Unacceptable results — you’re failing the company and the team."
+        return f"Comment: {activity_level}" # Only return the score-based comment
 
-            return f"Comment: {activity_level} {quality_level}"
-
-
+    # MODIFIED FUNCTION
     async def broadcast_admin_leaderboard(self, context: ContextTypes.DEFAULT_TYPE, time_frame: str):
         """Calculate and broadcast admin performance"""
         logger.info(f"Generating admin performance leaderboard for {time_frame}")
@@ -2268,8 +2268,8 @@ class BroadcastBot:
             else:
                 percentage_rating = 0 # No actions
 
-            # Generate performance comment
-            comment = await self._get_admin_performance_comment(score, percentage_rating)
+            # Generate performance comment based ONLY on score
+            comment = await self._get_admin_performance_comment(score) # (modified)
 
             message += (
                 f"{i + 1}. {name}\n"
@@ -2277,7 +2277,7 @@ class BroadcastBot:
                 f"   Positive Rating: {percentage_rating:.2f}%\n"
                 f"   Details (Broadcasts: {broadcasts}, Approvals: {approvals}, Rejections: {rejections})\n"
                 f"   (Signals Rated: {ratings})\n"
-                f"   {comment}\n\n"
+                f"   {comment}\n\n" #
             )
 
         target_admins = self.db.get_all_admin_ids()
