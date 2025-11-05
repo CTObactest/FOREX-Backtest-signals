@@ -1100,6 +1100,12 @@ class BroadcastBot:
         user = update.effective_user
         user_id = user.id
 
+        # --- FORCE SUB CHECK ---
+        if not await self.is_user_subscribed(user_id, context):
+            await self.send_join_channel_message(user_id, context)
+            return
+        # -----------------------
+
         self.db.add_user(user_id, user.username, user.first_name)
 
         if self.is_admin(user_id):
