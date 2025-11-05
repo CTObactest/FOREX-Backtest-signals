@@ -1240,10 +1240,15 @@ class BroadcastBot:
         else:
             await update.message.reply_text(message)
 
-    # Signal Suggestion (available to all users)
     async def suggest_signal_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Start signal suggestion conversation, checking limits first"""
         user_id = update.effective_user.id
+
+        # --- FORCE SUB CHECK ---
+        if not await self.is_user_subscribed(user_id, context):
+            await self.send_join_channel_message(user_id, context)
+            return ConversationHandler.END
+        # -----------------------
 
         # Get user's limit and current usage
         limit, level = self.get_user_suggestion_limit(user_id)
