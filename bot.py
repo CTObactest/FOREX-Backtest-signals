@@ -823,6 +823,50 @@ class MongoDBHandler:
             logger.error(f"Error getting admin performance stats: {e}")
             return []
 
+    def get_user_suggestions_today(self, user_id: int) -> int:
+        """Count user's suggestions since midnight UTC today"""
+        try:
+            # Get the start of today (midnight) in UTC
+            # Note: dt_time and timezone should be imported from datetime at the top of your file
+            # (which they already are)
+            today_utc = datetime.now(timezone.utc).date()
+            start_of_today_timestamp = datetime.combine(today_utc, dt_time(0, 0, tzinfo=timezone.utc)).timestamp()
+
+            count = self.signal_suggestions_collection.count_documents({
+                'suggested_by': user_id,
+                'created_at': {'$gte': start_of_today_timestamp}
+            })
+            return count
+        except Exception as e:
+            logger.error(f"Error counting today's suggestions for {user_id}: {e}")
+            return 0 # Fail safe
+
+    def get_user_average_rating(self, user_id: int) -> float:
+        """Get user's average rating from approved signals"""
+        try:
+            pipeline = [
+                {
+                    '$match': {
+                        'suggested_by': user_id,
+                        'status': 'approved',
+                        'rating': {'$exists': True}
+                    }
+                },
+                {
+                    '$group': {
+                        '_id': '$suggested_by',
+                        'average_rating': {'$avg': '$rating'}
+                    }
+                }
+            ]
+            result = list(self.signal_suggestions_collection.aggregate(pipeline))
+            if result:
+                return result[0]['average_rating']
+            return 0.0 # No rated signals
+        except Exception as e:
+            logger.error(f"Error getting user average rating for {user_id}: {e}")
+            return 0.0 # Fail safe
+
     def close(self):
         """Close MongoDB connection"""
         if self.client:
