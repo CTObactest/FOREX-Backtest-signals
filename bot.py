@@ -1050,9 +1050,6 @@ class BroadcastBot:
         if await self.is_user_subscribed(user_id, context):
             await query.edit_message_text("✅ Thank you! You can now use the bot.\n\nTry sending /start again.")
         else:
-            # Answer the query to stop the loading icon
-            await query.answer()
-            # Send a new message
             await context.bot.send_message(
                 chat_id=user_id,
                 text="❌ You still haven't joined the channel. Please join and try again."
