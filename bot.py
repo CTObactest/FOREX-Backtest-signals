@@ -1170,14 +1170,35 @@ class BroadcastBot:
 
     # Signal Suggestion (available to all users)
     async def suggest_signal_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Start signal suggestion conversation"""
-        await update.message.reply_text(
+        """Start signal suggestion conversation, checking limits first"""
+        user_id = update.effective_user.id
+
+        # Get user's limit and current usage
+        limit, level = self.get_user_suggestion_limit(user_id)
+        today_count = self.db.get_user_suggestions_today(user_id)
+
+        remaining = limit - today_count
+
+        if remaining <= 0:
+            await update.message.reply_text(
+                f"❌ You have reached your daily suggestion limit.\n\n"
+                f"Your Level: {level} (Limit: {limit}/day)\n"
+                f"Suggestions Made Today: {today_count}\n\n"
+                "Limits reset at Midnight UTC."
+            )
+            return ConversationHandler.END
+
+        # User has remaining suggestions, show updated prompt
+        message = (
             "💡 Suggest a Trading Signal\n\n"
+            f"Your Level: {level}\n"
+            f"Suggestions Remaining Today: {remaining} / {limit}\n\n"
             "Please send me your signal suggestion.\n"
             "You can send text, photos, or documents.\n\n"
             "Your suggestion will be reviewed by Super Admins.\n\n"
             "Send /cancel to cancel."
         )
+        await update.message.reply_text(message)
         return WAITING_SIGNAL_MESSAGE
 
     async def receive_signal_suggestion(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
