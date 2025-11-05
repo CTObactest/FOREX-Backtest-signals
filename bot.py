@@ -2741,11 +2741,23 @@ class BroadcastBot:
 
     async def handle_greeting(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle greetings"""
+        user_id = update.effective_user.id
+        # --- FORCE SUB CHECK ---
+        if not await self.is_user_subscribed(user_id, context):
+            await self.send_join_channel_message(user_id, context)
+            return
+        # -----------------------
         await update.message.reply_text("Hello! How can I assist you today?")
 
     async def subscribe_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Start the subscription conversation"""
         user_id = update.effective_user.id
+
+        # --- FORCE SUB CHECK ---
+        if not await self.is_user_subscribed(user_id, context):
+            await self.send_join_channel_message(user_id, context)
+            return ConversationHandler.END
+        # -----------------------
         
         # Check if already subscribed
         if self.db.is_subscriber(user_id):
@@ -3383,47 +3395,53 @@ class BroadcastBot:
             await update.message.reply_text(f"❌ Broadcast {broadcast_id} not found or already processed.")
 
 
-def main():
-    """Main function"""
-    BOT_TOKEN = os.getenv('BOT_TOKEN')
-    ADMIN_IDS = os.getenv('ADMIN_IDS', '').split(',')
-    MONGODB_URI = os.getenv('MONGODB_URI')
 
-    if not BOT_TOKEN:
-        raise ValueError("BOT_TOKEN required")
 
-    if not ADMIN_IDS or ADMIN_IDS == ['']:
-        raise ValueError("ADMIN_IDS required")
+    def main():
+        """Main function"""
+        BOT_TOKEN = os.getenv('BOT_TOKEN')
+        ADMIN_IDS = os.getenv('ADMIN_IDS', '').split(',')
+        MONGODB_URI = os.getenv('MONGODB_URI')
+        FORCE_SUB_CHANNEL = os.getenv('FORCE_SUB_CHANNEL') # <-- ADD THIS
+        if not BOT_TOKEN:
+            raise ValueError("BOT_TOKEN required")
+        if not ADMIN_IDS or ADMIN_IDS == ['']:
+            raise ValueError("ADMIN_IDS required")
 
-    if not MONGODB_URI:
-        raise ValueError("MONGODB_URI required")
+        if not MONGODB_URI:
+            raise ValueError("MONGODB_URI required")
 
-    try:
+        try:
         admin_ids = [int(admin_id.strip()) for admin_id in ADMIN_IDS if admin_id.strip()]
-    except ValueError:
-        raise ValueError("ADMIN_IDS must be comma-separated integers")
+        except ValueError:
+            raise ValueError("ADMIN_IDS must be comma-separated integers")
 
-    logger.info("Connecting to MongoDB...")
-    mongo_handler = MongoDBHandler(MONGODB_URI)
+        logger.info("Connecting to MongoDB...")
+        mongo_handler = MongoDBHandler(MONGODB_URI)
 
-    bot = BroadcastBot(BOT_TOKEN, admin_ids, mongo_handler)
-    application = bot.create_application()
+        bot = BroadcastBot(BOT_TOKEN, admin_ids, mongo_handler)
+        application = bot.create_application()
 
-    port = int(os.getenv('PORT', 8000))
+        port = int(os.getenv('PORT', 8000))
 
-    logger.info(f"Starting bot with {len(admin_ids)} super admin(s)")
-    logger.info(f"Health server on port {port}")
+        logger.info(f"Starting bot with {len(admin_ids)} super admin(s)")
+        logger.info(f"Health server on port {port}")
+    
+        if FORCE_SUB_CHANNEL:
+            logger.info(f"Force-sub feature is ENABLED for channel: {FORCE_SUB_CHANNEL}")
+        else:
+            logger.info("Force-sub feature is DISABLED (FORCE_SUB_CHANNEL not set)")
 
-    bot.run_health_server(port)
+        bot.run_health_server(port)
 
-    time.sleep(2)
+        time.sleep(2)
 
-    logger.info("Starting Telegram bot...")
-    try:
-        application.run_polling()
-    finally:
-        mongo_handler.close()
+        logger.info("Starting Telegram bot...")
+        try:
+            application.run_polling()
+        finally:
+            mongo_handler.close()
 
 
-if __name__ == '__main__':
-    main()
+    if __name__ == '__main__':
+        main()
