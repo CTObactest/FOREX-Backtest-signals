@@ -992,6 +992,71 @@ class BroadcastBot:
             "CR8047034", "CR8052255", "CR7380411", "CR7707424", "CR8581785", "CR8644473",
             "CR8648274", "CR8661054",
         }
+    # [Location: Inside BroadcastBot class, after __init__]
+
+    async def is_user_subscribed(self, user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
+        """Check if a user is subscribed to the force-sub channel"""
+        FORCE_SUB_CHANNEL = os.getenv('FORCE_SUB_CHANNEL')
+        if not FORCE_SUB_CHANNEL:
+            return True # Skip check if not configured
+
+        # Don't check admins
+        if self.is_admin(user_id):
+            return True
+
+        try:
+            member = await context.bot.get_chat_member(chat_id=FORCE_SUB_CHANNEL, user_id=user_id)
+            if member.status in ['member', 'administrator', 'creator']:
+                return True
+            else:
+                return False
+        except BadRequest as e:
+            if "user not found" in e.message or "chat not found" in e.message:
+                # "user not found" means they aren't in the channel
+                # "chat not found" means the FORCE_SUB_CHANNEL is wrong or bot isn't admin
+                if "chat not found" in e.message:
+                    logger.error(f"Force-sub error: Bot cannot access channel {FORCE_SUB_CHANNEL}. Is it an admin there?")
+                return False
+        except Exception as e:
+            logger.error(f"Error in is_user_subscribed for {user_id}: {e}")
+            return False # Fail-safe
+
+    async def send_join_channel_message(self, chat_id: int, context: ContextTypes.DEFAULT_TYPE):
+        """Sends the 'please join' message"""
+        FORCE_SUB_CHANNEL = os.getenv('FORCE_SUB_CHANNEL')
+        if not FORCE_SUB_CHANNEL:
+            return
+
+        # Create a channel link from the username
+        channel_link = f"https://t.me/{FORCE_SUB_CHANNEL.lstrip('@')}"
+
+        keyboard = [
+            [InlineKeyboardButton("Join Channel", url=channel_link)],
+            [InlineKeyboardButton("I've Joined", callback_data="check_joined")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="You must join our updates channel to use this bot.\n\nPlease join the channel and then press 'I've Joined'.",
+            reply_markup=reply_markup
+        )
+
+    async def check_joined_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handles the 'I've Joined' button press"""
+        query = update.callback_query
+        user_id = query.from_user.id
+        await query.answer("Checking...")
+
+        if await self.is_user_subscribed(user_id, context):
+            await query.edit_message_text("✅ Thank you! You can now use the bot.\n\nTry sending /start again.")
+        else:
+            # Answer the query to stop the loading icon
+            await query.answer()
+            # Send a new message
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="❌ You still haven't joined the channel. Please join and try again."
+            )    
         # Initialize super admins in database
         for admin_id in super_admin_ids:
             self.db.add_admin(admin_id, AdminRole.SUPER_ADMIN, admin_id)
