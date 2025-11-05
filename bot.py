@@ -6,6 +6,7 @@ from aiohttp import web
 import threading
 from datetime import datetime, timedelta, time as dt_time, timezone # <-- FIX 1: Renamed import
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.error import BadRequest
 from telegram.ext import (
     Application,
     CommandHandler,
