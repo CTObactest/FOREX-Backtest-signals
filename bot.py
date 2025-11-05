@@ -1013,6 +1013,22 @@ class BroadcastBot:
         # Broadcasters and Admins need approval, Super Admins and Moderators don't
         return role in [AdminRole.BROADCASTER, AdminRole.ADMIN]
 
+    def get_user_suggestion_limit(self, user_id: int) -> (int, str):
+        """Determines a user's suggestion limit and level based on their avg rating"""
+        avg_rating = self.db.get_user_average_rating(user_id)
+
+        if avg_rating >= 4:
+            limit = 5
+            level = "Premium (4-5 Star)"
+        elif avg_rating >= 3:
+            limit = 2
+            level = "Standard (3 Star)"
+        else: # < 3 or 0
+            limit = 1
+            level = "Basic (0-2 Star)"
+
+        return limit, level
+
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command"""
         user = update.effective_user
