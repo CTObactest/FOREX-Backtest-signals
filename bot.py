@@ -2678,6 +2678,7 @@ class BroadcastBot:
         # Basic commands
         application.add_handler(CommandHandler("start", self.start))
         application.add_handler(CommandHandler("help", self.help_command))
+        application.add_handler(CallbackQueryHandler(self.check_joined_callback, pattern="^check_joined$"))
         application.add_handler(CommandHandler("unsubscribe", self.unsubscribe))
         application.add_handler(CommandHandler("add", self.add_subscriber_command))
         application.add_handler(CommandHandler("stats", self.stats))
