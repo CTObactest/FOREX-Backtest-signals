@@ -15,6 +15,7 @@ from telegram.ext import (
     ConversationHandler,
     filters,
     ContextTypes
+    ApplicationHandlerStop
 )
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
@@ -1053,7 +1054,9 @@ class BroadcastBot:
             await context.bot.send_message(
                 chat_id=user_id,
                 text="❌ You still haven't joined the channel. Please join and try again."
-            )    
+            )
+
+        raise ApplicationHandlerStop
         # Initialize super admins in database
         for admin_id in super_admin_ids:
             self.db.add_admin(admin_id, AdminRole.SUPER_ADMIN, admin_id)
