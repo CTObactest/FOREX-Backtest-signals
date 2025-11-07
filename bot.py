@@ -3409,21 +3409,46 @@ class BroadcastBot:
         await update.message.reply_text(message)
 
     async def my_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /mystats command"""
+        """Handle /mystats command for both admins and users"""
         user_id = update.effective_user.id
-        if not self.is_admin(user_id):
-            await update.message.reply_text("❌ This command is for admins only.")
-            return
 
-        stats = self.db.get_admin_stats(user_id)
-        stats_text = (
-            f"📊 Your Statistics\n\n"
-            f"📢 Broadcasts Sent: {stats.get('broadcasts', 0)}\n"
-            f"📝 Templates Created: {stats.get('templates', 0)}\n"
-            f"⏰ Broadcasts Scheduled: {stats.get('scheduled', 0)}\n"
-            f"⭐ Signals Rated: {stats.get('ratings', 0)}"
-        )
-        await update.message.reply_text(stats_text)
+        if self.is_admin(user_id):
+            # --- Admin Statistics ---
+            stats = self.db.get_admin_stats(user_id)
+            stats_text = (
+                f"📊 Your Admin Statistics\n\n"
+                f"📢 Broadcasts Sent: {stats.get('broadcasts', 0)}\n"
+                f"📝 Templates Created: {stats.get('templates', 0)}\n"
+                f"⏰ Broadcasts Scheduled: {stats.get('scheduled', 0)}\n"
+                f"⭐ Signals Rated: {stats.get('ratings', 0)}"
+            )
+            await update.message.reply_text(stats_text)
+        
+        else:
+            # --- Regular User Statistics ---
+            # --- FORCE SUB CHECK ---
+            if not await self.is_user_subscribed(user_id, context):
+                await self.send_join_channel_message(user_id, context)
+                return
+            # -----------------------
+
+            signal_stats = self.db.get_user_signal_stats(user_id)
+            avg_rating = self.db.get_user_average_rating(user_id)
+            limit, level = self.get_user_suggestion_limit(user_id)
+            rank, total_ranked = self.db.get_user_suggester_rank(user_id)
+
+            rank_str = f"#{rank} of {total_ranked}" if rank > 0 else "Unranked"
+
+            stats_text = (
+                f"📈 Your Signal Stats\n\n"
+                f"💡 Total Signals Suggested: {signal_stats['total']}\n"
+                f"✅ Approved Signals: {signal_stats['approved']}\n"
+                f"🎯 Approval Rate: {signal_stats['rate']:.1f}%\n\n"
+                f"⭐ Average Rating: {avg_rating:.2f} stars\n"
+                f"🏆 Current Rank: {rank_str}\n"
+                f"🏅 Current Level: {level}"
+            )
+            await update.message.reply_text(stats_text)
 
     async def list_templates(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /templates command"""
