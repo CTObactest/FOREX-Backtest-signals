@@ -3702,7 +3702,6 @@ class BroadcastBot:
         except Exception as e:
             await update.message.reply_text(f"An error occurred: {e}")
 
-# --- FIX: Unindented main() function ---
 def main():
     """Main function"""
     BOT_TOKEN = os.getenv('BOT_TOKEN')
@@ -3718,7 +3717,7 @@ def main():
         raise ValueError("MONGODB_URI required")
 
     try:
-        # --- FIX: Indented this line ---
+        # --- FIX: This line should be indented inside main() ---
         admin_ids = [int(admin_id.strip()) for admin_id in ADMIN_IDS if admin_id.strip()]
     except ValueError:
         raise ValueError("ADMIN_IDS must be comma-separated integers")
