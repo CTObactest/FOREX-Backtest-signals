@@ -17,6 +17,8 @@ services:
         value: "8000"
       - name: FORCE_SUB_CHANNEL
         value: "@YourChannelUsername"
+      - name: FINNHUB_API_KEY
+        value: "YOUR_FINNHUB_API_KEY_HERE"
     regions:
       - was  # Washington
     scaling:
