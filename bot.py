@@ -3568,7 +3568,7 @@ class BroadcastBot:
             today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
             
             # Finnhub API requires a start and end date
-            calendar = self.finnhub_client.economic_calendar(
+            calendar = self.finnhub_client.economicCalendar(
                 _from=today, 
                 to=today
             )
