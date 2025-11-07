@@ -3550,10 +3550,7 @@ class BroadcastBot:
             await update.message.reply_text("❌ An error occurred while fetching the news.")
 
     async def calendar(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /calendar command"""
-        if not self.finnhub_client:
-            await update.message.reply_text("❌ The Calendar service is currently disabled by the admin.")
-            return
+        """Handle /calendar command - Temporary redirect to FXStreet"""
             
         try:
             # --- FORCE SUB CHECK ---
@@ -3562,44 +3559,33 @@ class BroadcastBot:
                 return
             # -----------------------
             
-            await update.message.reply_text("Fetching today's high-impact events...")
-            
-            # Get today's date in YYYY-MM-DD format
-            today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
-            
-            # Finnhub API requires a start and end date
-            calendar = self.finnhub_client.calendar_economic(
-                _from=today, 
-                to=today
+            # Temporary solution: Direct users to the website
+            message = (
+                "🗓️ <b>Economic Calendar</b>\n\n"
+                "To see the latest high-impact events, please use the official "
+                "FXStreet economic calendar."
             )
-            
-            if not calendar or not calendar.get('economicCalendar'):
-                await update.message.reply_text("No economic events found for today.")
-                return
 
-            high_impact_events = [
-                event for event in calendar['economicCalendar'] 
-                if event.get('impact') == 'high'
+            keyboard = [
+                [
+                    InlineKeyboardButton(
+                        "View Economic Calendar", 
+                        url="https://www.fxstreet.com/economic-calendar"
+                    )
+                ]
             ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
 
-            if not high_impact_events:
-                await update.message.reply_text("No <b>high-impact</b> events found for today.")
-                return
-
-            message = f"🗓️ High-Impact Events for {today} (UTC):\n\n"
-            for event in high_impact_events:
-                event_time = event.get('time', 'N/A')
-                currency = event.get('currency', '')
-                event_name = event.get('event', 'N/A')
-                message += f"<b>[{event_time}] {currency}</b> - {event_name}\n"
-                message += f"  <i>Actual: {event.get('actual', 'N/A')}, Forecast: {event.get('estimate', 'N/A')}, Previous: {event.get('previous', 'N/A')}</i>\n\n"
-
-            await update.message.reply_text(message, parse_mode=ParseMode.HTML)
+            await update.message.reply_text(
+                message, 
+                parse_mode=ParseMode.HTML, 
+                reply_markup=reply_markup,
+                disable_web_page_preview=True
+            )
 
         except Exception as e:
-            logger.error(f"Error fetching Finnhub calendar: {e}")
-            await update.message.reply_text("❌ An error occurred while fetching the calendar.")
-            
+            logger.error(f"Error in /calendar command: {e}")
+            await update.message.reply_text("❌ An error occurred.")
     def get_pip_value(self, pair: str, lot_size: float = 1.0) -> (float, int):
         """Helper to get pip value and decimal places for a pair"""
         pair = pair.upper()
