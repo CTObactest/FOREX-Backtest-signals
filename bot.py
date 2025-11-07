@@ -25,6 +25,8 @@ import time
 from enum import Enum
 import re
 import pytesseract
+import finnhub
+from telegram import ParseMode
 
 # Enable logging
 logging.basicConfig(
