@@ -871,6 +871,79 @@ class MongoDBHandler:
             logger.error(f"Error getting user average rating for {user_id}: {e}")
             return 0.0 # Fail safe
 
+    def get_user_signal_stats(self, user_id: int) -> Dict:
+        """Get a user's signal suggestion stats"""
+        try:
+            total_suggestions = self.signal_suggestions_collection.count_documents({
+                'suggested_by': user_id
+            })
+            approved_suggestions = self.signal_suggestions_collection.count_documents({
+                'suggested_by': user_id,
+                'status': 'approved'
+            })
+            
+            approval_rate = 0.0
+            if total_suggestions > 0:
+                approval_rate = (approved_suggestions / total_suggestions) * 100
+                
+            return {
+                'total': total_suggestions,
+                'approved': approved_suggestions,
+                'rate': approval_rate
+            }
+        except Exception as e:
+            logger.error(f"Error getting user signal stats for {user_id}: {e}")
+            return {'total': 0, 'approved': 0, 'rate': 0.0}
+
+    def get_user_suggester_rank(self, user_id: int) -> (int, int):
+        """Get a user's rank on the all-time suggester leaderboard"""
+        try:
+            # This pipeline ranks all users by average rating, then signal count
+            pipeline = [
+                {
+                    '$match': {
+                        'status': 'approved',
+                        'rating': {'$exists': True}
+                    }
+                },
+                {
+                    '$group': {
+                        '_id': '$suggested_by',
+                        'average_rating': {'$avg': '$rating'},
+                        'signal_count': {'$sum': 1}
+                    }
+                },
+                {
+                    '$sort': {
+                        'average_rating': -1,
+                        'signal_count': -1
+                    }
+                },
+                {
+                    '$group': {
+                        '_id': None,
+                        'users': {'$push': {'user_id': '$_id'}}
+                    }
+                }
+            ]
+            result = list(self.signal_suggestions_collection.aggregate(pipeline))
+            
+            if not result or 'users' not in result[0]:
+                return 0, 0 # No ranked users
+
+            total_ranked_users = len(result[0]['users'])
+            
+            try:
+                # Find the user's 1-based index (rank)
+                rank = [i for i, user in enumerate(result[0]['users']) if user['user_id'] == user_id][0] + 1
+                return rank, total_ranked_users
+            except IndexError:
+                return 0, total_ranked_users # User is not ranked
+
+        except Exception as e:
+            logger.error(f"Error getting user suggester rank for {user_id}: {e}")
+            return 0, 0
+
     def close(self):
         """Close MongoDB connection"""
         if self.client:
