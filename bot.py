@@ -3508,6 +3508,193 @@ class BroadcastBot:
         else:
             await update.message.reply_text(f"❌ Broadcast {broadcast_id} not found or already processed.")
 
+    # --- Forex Utility Toolkit ---
+
+    async def news(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /news command"""
+        if not self.finnhub_client:
+            await update.message.reply_text("❌ The News service is currently disabled by the admin.")
+            return
+
+        try:
+            # --- FORCE SUB CHECK ---
+            if not await self.is_user_subscribed(update.effective_user.id, context):
+                await self.send_join_channel_message(update.effective_user.id, context)
+                return
+            # -----------------------
+            
+            await update.message.reply_text("Fetching latest forex news...")
+            
+            forex_news = self.finnhub_client.general_news('forex', min_id=0)
+            
+            if not forex_news:
+                await update.message.reply_text("No recent forex news found.")
+                return
+
+            message = "📰 Latest Forex News (Top 5):\n\n"
+            for item in forex_news[:5]:
+                message += f"▪️ <a href='{item['url']}'>{item['headline']}</a>\n"
+                message += f"   <i>Source: {item['source']}</i>\n\n"
+
+            await update.message.reply_text(message, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+        except Exception as e:
+            logger.error(f"Error fetching Finnhub news: {e}")
+            await update.message.reply_text("❌ An error occurred while fetching the news.")
+
+    async def calendar(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /calendar command"""
+        if not self.finnhub_client:
+            await update.message.reply_text("❌ The Calendar service is currently disabled by the admin.")
+            return
+            
+        try:
+            # --- FORCE SUB CHECK ---
+            if not await self.is_user_subscribed(update.effective_user.id, context):
+                await self.send_join_channel_message(update.effective_user.id, context)
+                return
+            # -----------------------
+            
+            await update.message.reply_text("Fetching today's high-impact events...")
+            
+            # Get today's date in YYYY-MM-DD format
+            today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+            
+            # Finnhub API requires a start and end date
+            calendar = self.finnhub_client.economic_calendar(
+                _from=today, 
+                to=today
+            )
+            
+            if not calendar or not calendar.get('economicCalendar'):
+                await update.message.reply_text("No economic events found for today.")
+                return
+
+            high_impact_events = [
+                event for event in calendar['economicCalendar'] 
+                if event.get('impact') == 'high'
+            ]
+
+            if not high_impact_events:
+                await update.message.reply_text("No <b>high-impact</b> events found for today.")
+                return
+
+            message = f"🗓️ High-Impact Events for {today} (UTC):\n\n"
+            for event in high_impact_events:
+                event_time = event.get('time', 'N/A')
+                currency = event.get('currency', '')
+                event_name = event.get('event', 'N/A')
+                message += f"<b>[{event_time}] {currency}</b> - {event_name}\n"
+                message += f"  <i>Actual: {event.get('actual', 'N/A')}, Forecast: {event.get('estimate', 'N/A')}, Previous: {event.get('previous', 'N/A')}</i>\n\n"
+
+            await update.message.reply_text(message, parse_mode=ParseMode.HTML)
+
+        except Exception as e:
+            logger.error(f"Error fetching Finnhub calendar: {e}")
+            await update.message.reply_text("❌ An error occurred while fetching the calendar.")
+            
+    def get_pip_value(self, pair: str, lot_size: float = 1.0) -> (float, int):
+        """Helper to get pip value and decimal places for a pair"""
+        pair = pair.upper()
+        if "JPY" in pair:
+            decimals = 3
+            pip_multiplier = 0.01
+        elif "XAU" in pair or "GOLD" in pair: # Gold
+            decimals = 2
+            pip_multiplier = 0.1
+        else: # Standard pairs
+            decimals = 5
+            pip_multiplier = 0.0001
+        
+        # This is a simplification. Real value depends on quote currency.
+        # For a standard lot (100,000 units)
+        pip_value_per_lot = pip_multiplier * 100_000
+        
+        # For now, let's assume quote is USD or similar
+        # A 1-lot pip value is roughly $10 for XXX/USD
+        # A 1-lot pip value for USD/JPY is (0.01 / JPY_PRICE) * 100,000
+        
+        # Let's simplify and just return decimals and pip multiplier
+        return pip_multiplier, decimals
+
+    async def pips_calculator(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /pips [pair] [entry] [exit]"""
+        try:
+            # --- FORCE SUB CHECK ---
+            if not await self.is_user_subscribed(update.effective_user.id, context):
+                await self.send_join_channel_message(update.effective_user.id, context)
+                return
+            # -----------------------
+            
+            if len(context.args) != 3:
+                await update.message.reply_text("Usage: /pips [pair] [entry_price] [exit_price]\nExample: /pips EURUSD 1.0850 1.0900")
+                return
+
+            pair = context.args[0].upper()
+            entry = float(context.args[1])
+            exit_price = float(context.args[2])
+            
+            pip_multiplier, decimals = self.get_pip_value(pair)
+            
+            pips = (exit_price - entry) / pip_multiplier
+            
+            direction = "Profit" if pips > 0 else "Loss"
+            
+            message = (
+                f"🧮 Pip Calculator\n\n"
+                f"Pair: {pair}\n"
+                f"Entry: {entry}\n"
+                f"Exit: {exit_price}\n\n"
+                f"Result: <b>{pips:.1f} pips</b> ({direction})"
+            )
+            await update.message.reply_text(message, parse_mode=ParseMode.HTML)
+            
+        except ValueError:
+            await update.message.reply_text("❌ Invalid prices. Please use numbers.")
+        except Exception as e:
+            await update.message.reply_text(f"An error occurred: {e}")
+            
+    async def position_size_calculator(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /positionsize [pair] [risk_usd] [stop_loss_pips]"""
+        try:
+            # --- FORCE SUB CHECK ---
+            if not await self.is_user_subscribed(update.effective_user.id, context):
+                await self.send_join_channel_message(update.effective_user.id, context)
+                return
+            # -----------------------
+            
+            if len(context.args) != 3:
+                await update.message.reply_text("Usage: /positionsize [pair] [risk_usd] [stop_loss_pips]\nExample: /positionsize EURUSD 100 20")
+                return
+                
+            pair = context.args[0].upper()
+            risk_usd = float(context.args[1])
+            stop_loss_pips = float(context.args[2])
+
+            if "JPY" in pair:
+                pip_value_per_lot = 1000 # (0.01 * 100,000) / JPY_PRICE ~ 7 USD, but often calculated as 1000 JPY
+                # This is too complex without a live price. Let's assume $10 pip value.
+                value_per_pip_per_lot = 10 # Standard assumption
+            else:
+                value_per_pip_per_lot = 10 # Standard assumption for XXX/USD pairs ($0.0001 * 100,000)
+            
+            # (Risk USD) / (Stop Loss pips * Value per Pip) = Lot Size
+            lot_size = risk_usd / (stop_loss_pips * value_per_pip_per_lot)
+            
+            message = (
+                f"📐 Position Size Calculator\n\n"
+                f"Risk: ${risk_usd:,.2f}\n"
+                f"Stop Loss: {stop_loss_pips} pips\n"
+                f"Pair: {pair} (assuming ~$10/pip/lot)\n\n"
+                f"Recommended Lot Size: <b>{lot_size:.2f} lots</b>"
+            )
+            await update.message.reply_text(message, parse_mode=ParseMode.HTML)
+
+        except ValueError:
+            await update.message.reply_text("❌ Invalid risk or pips. Please use numbers.")
+        except Exception as e:
+            await update.message.reply_text(f"An error occurred: {e}")
+
 # --- FIX: Unindented main() function ---
 def main():
     """Main function"""
