@@ -35,6 +35,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# --- Finnhub API Configuration ---
+FINNHUB_API_KEY = os.getenv('FINNHUB_API_KEY')
+if not FINNHUB_API_KEY:
+    logger.warning("FINNHUB_API_KEY is not set. /news and /calendar commands will be disabled.")
+# ---------------------------------
+
 # Conversation states
 WAITING_MESSAGE, WAITING_BUTTONS, WAITING_PROTECTION, WAITING_TARGET = range(4)
 WAITING_TEMPLATE_NAME, WAITING_TEMPLATE_MESSAGE, WAITING_TEMPLATE_CATEGORY = range(4, 7)
