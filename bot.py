@@ -2785,6 +2785,13 @@ class BroadcastBot:
         application.add_handler(CommandHandler("logs", self.view_logs))
         application.add_handler(CommandHandler("mystats", self.my_stats))
 
+        # --- NEW: Forex Toolkit Handlers ---
+        application.add_handler(CommandHandler("news", self.news))
+        application.add_handler(CommandHandler("calendar", self.calendar))
+        application.add_handler(CommandHandler("pips", self.pips_calculator))
+        application.add_handler(CommandHandler("positionsize", self.position_size_calculator))
+        # -----------------------------------
+
         # Templates
         application.add_handler(CommandHandler("templates", self.list_templates))
         application.add_handler(template_handler)
