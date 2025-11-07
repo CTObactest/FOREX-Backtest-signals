@@ -1010,6 +1010,13 @@ class BroadcastBot:
         self.super_admin_ids = super_admin_ids
         self.db = mongo_handler
         self.watermarker = ImageWatermarker()
+        self.finnhub_client = None
+        if FINNHUB_API_KEY:
+            try:
+                self.finnhub_client = finnhub.Client(api_key=FINNHUB_API_KEY)
+                logger.info("Finnhub client initialized successfully.")
+            except Exception as e:
+                logger.error(f"Failed to initialize Finnhub client: {e}")
         self.cr_numbers = {
             "CR5499637", "CR5500382", "CR5529877", "CR5535613", "CR5544922", "CR5551288",
             "CR5552176", "CR5556284", "CR5556287", "CR5561483", "CR5563616", "CR5577880",
