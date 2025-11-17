@@ -2764,7 +2764,7 @@ class BroadcastBot:
 
         # Signal suggestion handler
         signal_handler = ConversationHandler(
-            entry_points=[CommandHandler("suggestsignal", self.suggest_signal_start)],
+            entry_points=[CommandHandler("suggestsignal", self.suggest_signal_start_v2)],
             states={
                 WAITING_SIGNAL_MESSAGE: [
                     MessageHandler(filters.ALL & ~filters.COMMAND, self.receive_signal_suggestion)
