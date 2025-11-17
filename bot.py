@@ -1906,7 +1906,7 @@ class BroadcastBot:
                 'title': "👥 User Management Commands",
                 'description': "Manage your bot's subscribers.",
                 'cmds': [
-                    "/add <user_id> - Add subscriber",
+                    "/add &lt;user_id&gt; - Add subscriber",  # <-- This line is fixed
                     "/stats - View statistics",
                     "/subscribers - List subscribers",
                 ]
@@ -1932,7 +1932,7 @@ class BroadcastBot:
                 'title': "❓ Admin Help",
                 'description': "General information and assistance for admins.",
                 'cmds': [
-                    "Need specific help? Contact support or refer to the documentation.",
+                    "Need specific help? Contact Executives.",
                 ]
             }
         }
