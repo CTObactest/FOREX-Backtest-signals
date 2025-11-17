@@ -2036,9 +2036,7 @@ class BroadcastBot:
         user = update.effective_user
         user_id = user.id
         
-        # --- NEW: Track Engagement ---
-        # self.engagement_tracker.update_engagement(user_id, 'command_used') # <--- REMOVED/COMMENTED OUT THIS LINE
-        # -----------------------------
+        self.engagement_tracker.update_engagement(user_id, 'command_used')
 
         if not await self.is_user_subscribed(user_id, context):
             await self.send_join_channel_message(user_id, context)
@@ -2183,6 +2181,8 @@ class BroadcastBot:
         )
 
         if suggestion_id:
+            self.engagement_tracker.update_engagement(user.id, 'signal_suggested')
+            await self.achievement_system.check_and_award_achievements(user.id, context, self.db)
             await update.message.reply_text(
                 "✅ Signal suggestion submitted!\n\n"
                 "Super Admins will review your suggestion.\n"
@@ -2385,6 +2385,13 @@ class BroadcastBot:
 
         # Update status with rating
         self.db.update_suggestion_status(suggestion_id, 'approved', query.from_user.id, rating=rating)
+        
+        # --- ADD THIS BLOCK ---
+        suggester_id = suggestion['suggested_by']
+        self.engagement_tracker.update_engagement(suggester_id, 'signal_approved')
+        if rating == 5:
+            self.engagement_tracker.update_engagement(suggester_id, 'signal_5_star')
+        await self.achievement_system.check_and_award_achievements(suggester_id, context, self.db)
 
         # Get updated suggestion data (with rating)
         suggestion = self.db.get_suggestion_by_id(suggestion_id)
