@@ -3223,31 +3223,65 @@ class BroadcastBot:
             logger.error(f"Error in process_scheduled_broadcasts: {e}")
 
     # New Leaderboard Methods
-    async def broadcast_suggester_leaderboard(self, context: ContextTypes.DEFAULT_TYPE, time_frame: str):
-        """Calculate and broadcast suggester leaderboard"""
-        logger.info(f"Generating suggester leaderboard for: {time_frame}")
+    async def broadcast_suggester_leaderboard_v2(self, context: ContextTypes.DEFAULT_TYPE, time_frame: str):
+        """Professional, motivating leaderboard"""
         stats = self.db.get_suggester_stats(time_frame)
 
         if not stats:
-            logger.info(f"No suggester stats found for {time_frame}.")
             return
 
-        message = f"🏆 Signal Suggester Leaderboard ({time_frame.title()})\n\n"
-        for i, stat in enumerate(stats):
-            message += (
-                f"{i + 1}. {stat['suggester_name']}\n"
-                f"   Avg Rating: {stat['average_rating']:.2f} ⭐ ({stat['signal_count']} signals)\n\n"
-            )
+        period = "This Week" if time_frame == 'weekly' else "This Month"
+        
+        message = (
+            f"🏆 <b>Top Signal Contributors - {period}</b>\n\n"
+            f"Our community's best performers:\n\n"
+        )
+        
+        medals = ["🥇", "🥈", "🥉"]
+        
+        for i, stat in enumerate(stats[:10]):
+            rank_icon = medals[i] if i < 3 else f"<b>{i+1}.</b>"
+            
+            # Check privacy
+            user_doc = self.db.users_collection.find_one({'user_id': stat['_id']})
+            is_public = user_doc.get('leaderboard_public', True) if user_doc else True
+            name = stat['suggester_name'] if is_public else "Anonymous"
 
+            rating = stat['average_rating']
+            count = stat['signal_count']
+            
+            tier = ""
+            if rating >= 4.5: tier = "⭐ Elite"
+            elif rating >= 4.0: tier = "💎 Expert"
+            elif rating >= 3.5: tier = "🔷 Advanced"
+            else: tier = "📊 Active"
+            
+            message += (
+                f"{rank_icon} <b>{name}</b> ({tier})\n"
+                f"    {rating:.1f}⭐ • {count} signals\n\n"
+            )
+        
+        message += (
+            "\n💡 <b>Want to climb the ranks?</b>\n"
+            "• Submit high-quality signals\n"
+            "• Include clear entry/exit points\n"
+            "• Explain your analysis\n\n"
+            "Use /suggestsignal to contribute!"
+        )
+        
+        # Send to all users who have not opted out
         target_users = self.db.get_all_users()
         for user_id in target_users:
-            try:
-                await context.bot.send_message(chat_id=user_id, text=message)
-                await asyncio.sleep(0.05)
-            except Exception as e:
-                logger.error(f"Failed to send suggester leaderboard to {user_id}: {e}")
-        logger.info(f"Broadcasted suggester leaderboard to {len(target_users)} users.")
-
+            if self.notification_manager.should_notify(user_id, 'leaderboards'):
+                try:
+                    await context.bot.send_message(
+                        chat_id=user_id, 
+                        text=message,
+                        parse_mode=ParseMode.HTML
+                    )
+                    await asyncio.sleep(0.05)
+                except Exception as e:
+                    logger.error(f"Failed to send leaderboard to {user_id}: {e}")
     # MODIFIED FUNCTION
     async def _get_admin_performance_comment(self, score: int) -> str:
         """Generate a brutally honest comment on admin performance based ONLY on score"""
@@ -3266,74 +3300,81 @@ class BroadcastBot:
         return f"Comment: {activity_level}" # Only return the score-based comment
 
     # MODIFIED FUNCTION
-    async def broadcast_admin_leaderboard(self, context: ContextTypes.DEFAULT_TYPE, time_frame: str):
-        """Calculate and broadcast admin performance"""
-        logger.info(f"Generating admin performance leaderboard for {time_frame}")
+    async def broadcast_admin_leaderboard_v2(self, context: ContextTypes.DEFAULT_TYPE, time_frame: str):
+        """Professional admin performance board - private to admins"""
         stats = self.db.get_admin_performance_stats(time_frame)
 
         if not stats:
-            logger.info(f"No admin performance stats found for {time_frame}.")
             return
 
-        message = f"📊 Admin {time_frame.title()} Performance\n\n"
-        for i, stat in enumerate(stats):
-            name = stat.get('admin_name', f"ID: {stat['user_id']}")
+        period = "Weekly" if time_frame == 'weekly' else "Monthly"
+        
+        message = (
+            f"📊 <b>Admin Team Performance - {period}</b>\n\n"
+            f"Great work, team! Here's our activity summary:\n\n"
+        )
+        
+        for i, stat in enumerate(stats[:10]):
+            name = stat.get('admin_name', f"Admin {stat['user_id']}")
             score = stat.get('score', 0)
             broadcasts = stat.get('broadcasts', 0)
-            approvals = stat.get('approvals', 0) # This field is from the pipeline
-            ratings = stat.get('ratings', 0)     # This is a sub-metric of approvals
+            approvals = stat.get('approvals', 0)
             rejections = stat.get('rejections', 0)
             
-            # Total positive actions = broadcasts + approvals (which includes ratings)
-            total_positive_actions = broadcasts + approvals
+            level = ""
+            if score >= 20: level = "🔥 Exceptional"
+            elif score >= 12: level = "⚡ High Impact"
+            elif score >= 6: level = "✅ Active"
+            elif score >= 3: level = "📊 Contributing"
+            else: level = "💤 Low Activity"
             
-            # Total actions = positive + negative = (broadcasts + approvals) + rejections
-            # This should match the (new) score
-            total_actions = score 
-
-            if total_actions > 0:
-                percentage_rating = (total_positive_actions / total_actions) * 100
-            else:
-                percentage_rating = 0 # No actions
-
-            # Generate performance comment based ONLY on score
-            comment = await self._get_admin_performance_comment(score) # (modified)
-
             message += (
-                f"{i + 1}. {name}\n"
-                f"   Score: {score}\n"
-                f"   Positive Rating: {percentage_rating:.2f}%\n"
-                f"   Details (Broadcasts: {broadcasts}, Approvals: {approvals}, Rejections: {rejections})\n"
-                f"   (Signals Rated: {ratings})\n"
-                f"   {comment}\n\n" #
+                f"<b>{i+1}. {name}</b> ({level})\n"
+                f"    Score: {score} | Broadcasts: {broadcasts}\n"
+                f"    Approvals: {approvals} | Rejections: {rejections}\n\n"
             )
-
+        
+        message += "\n💡 <b>Team Insights:</b>\n"
+        
+        avg_score = sum(s.get('score', 0) for s in stats) / len(stats) if stats else 0
+        
+        if avg_score >= 10:
+            message += "• Excellent team engagement this period! 🎉\n"
+        elif avg_score >= 5:
+            message += "• Solid team performance. Keep it up! 💪\n"
+        else:
+            message += "• Let's increase our activity. Users depend on us! 📈\n"
+        
+        message += "\n<i>Remember: Quality over quantity. Every interaction matters.</i>"
+        
+        # Send ONLY to admins
         target_admins = self.db.get_all_admin_ids()
         for admin_id in target_admins:
             try:
-                await context.bot.send_message(chat_id=admin_id, text=message)
+                await context.bot.send_message(
+                    chat_id=admin_id, 
+                    text=message,
+                    parse_mode=ParseMode.HTML
+                )
                 await asyncio.sleep(0.05)
             except Exception as e:
                 logger.error(f"Failed to send admin leaderboard to {admin_id}: {e}")
-        logger.info(f"Broadcasted admin leaderboard to {len(target_admins)} admins.")
 
-
-    async def run_leaderboards_job(self, context: ContextTypes.DEFAULT_TYPE):
+    async def run_leaderboards_job_v2(self, context: ContextTypes.DEFAULT_TYPE):
         """Job to run weekly/monthly leaderboards"""
         logger.info("Running weekly leaderboard job...")
         today = datetime.now(timezone.utc)
 
         # 1. Weekly Suggester Leaderboard
-        await self.broadcast_suggester_leaderboard(context, 'weekly')
+        await self.broadcast_suggester_leaderboard_v2(context, 'weekly')
         
         # 2. Weekly Admin Leaderboard
-        await self.broadcast_admin_leaderboard(context, 'weekly')
+        await self.broadcast_admin_leaderboard_v2(context, 'weekly')
 
         # 3. Monthly Leaderboards (if first Sunday of month)
         if today.day <= 7:
-            await self.broadcast_suggester_leaderboard(context, 'monthly')
-            await self.broadcast_admin_leaderboard(context, 'monthly')
-
+            await self.broadcast_suggester_leaderboard_v2(context, 'monthly')
+            await self.broadcast_admin_leaderboard_v2(context, 'monthly')
 
     def calculate_next_time(self, current_time: float, repeat: str) -> float:
         """Calculate next scheduled time based on repeat pattern"""
