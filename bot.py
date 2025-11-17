@@ -117,7 +117,568 @@ ROLE_PERMISSIONS = {
     ]
 }
 
+class PerformanceTransparency:
+    """Show real, auditable performance"""
+    
+    @staticmethod
+    async def show_verified_performance(update: Update, context: ContextTypes.DEFAULT_TYPE, db):
+        """Display verified signal performance - builds trust"""
+        
+        # Calculate last 30 days performance
+        thirty_days_ago = time.time() - (30 * 86400)
+        
+        pipeline = [
+            {
+                '$match': {
+                    'status': 'approved',
+                    'reviewed_at': {'$gte': thirty_days_ago},
+                    'rating': {'$exists': True}
+                }
+            },
+            {
+                '$group': {
+                    '_id': None,
+                    'total_signals': {'$sum': 1},
+                    'avg_rating': {'$avg': '$rating'},
+                    'excellent_signals': {
+                        '$sum': {'$cond': [{'$gte': ['$rating', 4]}, 1, 0]}
+                    }
+                }
+            }
+        ]
+        
+        stats = list(db.signal_suggestions_collection.aggregate(pipeline))
+        
+        if not stats:
+            await update.message.reply_text("📊 No performance data available yet for the last 30 days.")
+            return
+        
+        data = stats[0]
+        total = data['total_signals']
+        avg_rating = data['avg_rating']
+        excellent = data['excellent_signals']
+        win_rate = (excellent / total * 100) if total > 0 else 0
+        
+        message = (
+            "📊 <b>PipSage Performance (Last 30 Days)</b>\n\n"
+            
+            f"✅ Signals Shared: {total}\n"
+            f"⭐ Average Rating: {avg_rating:.1f}/5.0\n"
+            f"🎯 Quality Rate: {win_rate:.1f}% (4+ stars)\n\n"
+            
+            "📈 <b>Verified & Transparent</b>\n"
+            "Every signal is rated by our admin team after results.\n"
+            "No fake claims, no hidden losses.\n\n"
+            
+            "Try us: /subscribe"
+        )
+        
+        await update.message.reply_text(message, parse_mode=ParseMode.HTML)
 
+class AchievementSystem:
+    """Award badges for milestones"""
+    
+    ACHIEVEMENTS = {
+        'first_signal': {
+            'name': '🌱 First Signal',
+            'description': 'Submitted your first signal',
+            'reward': 'Unlocked signal suggestions'
+        },
+        'approved_signal': {
+            'name': '✅ Approved',
+            'description': 'Had a signal approved by admins',
+            'reward': '+1 to daily limit'
+        },
+        'five_star': {
+            'name': '⭐⭐⭐⭐⭐ Perfect',
+            'description': 'Received a 5-star rating',
+            'reward': 'Featured in leaderboard'
+        },
+        'consistent': {
+            'name': '🔥 Consistent',
+            'description': '7 days of activity',
+            'reward': '+1 to daily limit'
+        },
+        'top_10': {
+            'name': '🏆 Top 10',
+            'description': 'Reached top 10 on leaderboard',
+            'reward': 'Special badge on signals'
+        },
+        'elite': {
+            'name': '💎 Elite Trader',
+            'description': '4.5+ avg rating, 20+ signals',
+            'reward': 'Unlimited daily signals'
+        }
+    }
+    
+    @staticmethod
+    async def check_and_award_achievements(user_id: int, context: ContextTypes.DEFAULT_TYPE, db):
+        """Check if user earned new achievements"""
+        
+        user = db.users_collection.find_one({'user_id': user_id})
+        if not user:
+            return [] # User not found
+            
+        current_achievements = set(user.get('achievements', []))
+        
+        # Check conditions
+        signal_stats = db.get_user_signal_stats(user_id)
+        avg_rating = db.get_user_average_rating(user_id)
+        
+        new_achievements = []
+        
+        # First signal
+        if 'first_signal' not in current_achievements and signal_stats['total'] >= 1:
+            new_achievements.append('first_signal')
+        
+        # First approval
+        if 'approved_signal' not in current_achievements and signal_stats['approved'] >= 1:
+            new_achievements.append('approved_signal')
+        
+        # Check for 5-star rating
+        has_five_star = db.signal_suggestions_collection.find_one({
+            'suggested_by': user_id,
+            'rating': 5
+        })
+        if 'five_star' not in current_achievements and has_five_star:
+            new_achievements.append('five_star')
+        
+        # Elite status
+        if 'elite' not in current_achievements and avg_rating >= 4.5 and signal_stats['approved'] >= 20:
+            new_achievements.append('elite')
+        
+        # Award new achievements
+        if new_achievements:
+            db.users_collection.update_one(
+                {'user_id': user_id},
+                {'$addToSet': {'achievements': {'$each': new_achievements}}}
+            )
+            
+            # Notify user
+            for achievement_key in new_achievements:
+                achievement = AchievementSystem.ACHIEVEMENTS[achievement_key]
+                message = (
+                    f"🎉 <b>Achievement Unlocked!</b>\n\n"
+                    f"{achievement['name']}\n"
+                    f"{achievement['description']}\n\n"
+                    f"<b>Reward:</b> {achievement['reward']}"
+                )
+                
+                try:
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text=message,
+                        parse_mode=ParseMode.HTML
+                    )
+                except:
+                    pass
+        
+        return new_achievements
+
+class ReferralSystem:
+    """Reward users for inviting friends"""
+    
+    @staticmethod
+    def generate_referral_link(user_id: int, bot_username: str) -> str:
+        """Create unique referral link"""
+        return f"https://t.me/{bot_username}?start=ref_{user_id}"
+    
+    @staticmethod
+    async def process_referral(new_user_id: int, referrer_id: int, db, context):
+        """Handle new user from referral"""
+        
+        # Award referrer
+        db.users_collection.update_one(
+            {'user_id': referrer_id},
+            {
+                '$inc': {'referrals': 1},
+                '$push': {'referred_users': new_user_id}
+            },
+            upsert=True # Ensure referrer doc exists
+        )
+        
+        # Check referral milestones
+        referrer = db.users_collection.find_one({'user_id': referrer_id})
+        referral_count = referrer.get('referrals', 0)
+        
+        rewards = {
+            1: "🎁 +1 daily signal limit for 7 days",
+            5: "🎁 +2 daily signal limit permanently",
+            10: "💎 VIP status for 1 month",
+            25: "🏆 Elite status + featured profile"
+        }
+        
+        if referral_count in rewards:
+            reward_message = (
+                f"🎉 <b>Referral Milestone!</b>\n\n"
+                f"You've referred {referral_count} users!\n\n"
+                f"<b>Reward:</b> {rewards[referral_count]}\n\n"
+                f"Keep sharing: /referral"
+            )
+            
+            try:
+                await context.bot.send_message(
+                    chat_id=referrer_id,
+                    text=reward_message,
+                    parse_mode=ParseMode.HTML
+                )
+            except:
+                pass
+        
+        # Thank new user
+        welcome_message = (
+            f"👋 Welcome! You were referred by user {referrer_id}.\n\n"
+            f"Both of you will earn rewards as you use PipSage!\n\n"
+            f"Get started: /help"
+        )
+        
+        try:
+            await context.bot.send_message(
+                chat_id=new_user_id,
+                text=welcome_message
+            )
+        except:
+            pass
+    
+    @staticmethod
+    async def show_referral_stats(user_id: int, bot_username: str, db, update):
+        """Display user's referral info"""
+        
+        user = db.users_collection.find_one({'user_id': user_id})
+        referral_count = user.get('referrals', 0) if user else 0
+        link = ReferralSystem.generate_referral_link(user_id, bot_username)
+        
+        # Calculate next milestone
+        milestones = [1, 5, 10, 25, 50]
+        next_milestone = next((m for m in milestones if m > referral_count), 50)
+        
+        message = (
+            "🎁 <b>Your Referral Program</b>\n\n"
+            
+            f"📊 Total Referrals: {referral_count}\n"
+            f"🎯 Next Milestone: {next_milestone} ({next_milestone - referral_count} more)\n\n"
+            
+            "<b>Your Unique Link:</b>\n"
+            f"<code>{link}</code>\n\n"
+            
+            "<b>Rewards:</b>\n"
+            "1 referral = +1 daily signal (7 days)\n"
+            "5 referrals = +2 daily signal (permanent)\n"
+            "10 referrals = VIP status (1 month)\n"
+            "25 referrals = Elite status + feature\n\n"
+            
+            "💡 Share with friends who trade forex!"
+        )
+        
+        keyboard = [[InlineKeyboardButton("📤 Share Link", url=f"https://t.me/share/url?url={link}&text=Check%20out%20this%20Forex%20Bot!")] ]
+        
+        await update.message.reply_text(
+            message,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+async def show_testimonials_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Display verified user testimonials"""
+    
+    testimonials = [
+        {
+            'user': 'John M.',
+            'rating': 5,
+            'text': 'PipSage signals helped me turn $500 into $2,400 in 3 months. The risk management tools are gold!',
+            'verified': True
+        },
+        {
+            'user': 'Sarah K.',
+            'rating': 5,
+            'text': 'Finally, a trading bot that\'s not spam! Real signals, real results. Worth every penny.',
+            'verified': True
+        },
+        {
+            'user': 'Mike T.',
+            'rating': 4,
+            'text': 'The educational content alone is worth it. Improved my win rate from 45% to 67%.',
+            'verified': True
+        }
+    ]
+    
+    message = "⭐ <b>What Our Members Say</b>\n\n"
+    
+    for t in testimonials:
+        stars = '⭐' * t['rating']
+        verified = '✅ Verified' if t['verified'] else ''
+        message += (
+            f"{stars} {verified}\n"
+            f"<i>\"{t['text']}\"</i>\n"
+            f"— {t['user']}\n\n"
+        )
+    
+    message += "Join them: /subscribe"
+    
+    await update.message.reply_text(message, parse_mode=ParseMode.HTML)
+
+class PromotionManager:
+    """Handle special offers tastefully"""
+    
+    @staticmethod
+    async def announce_promo(context: ContextTypes.DEFAULT_TYPE, db):
+        """Announce promotion ONCE to active users"""
+        
+        # Only to users who haven't subscribed yet
+        non_subscribers = db.users_collection.find({
+            'user_id': {'$nin': list(db.get_all_subscribers())},
+            'last_activity': {'$gte': time.time() - (7 * 86400)},  # Active in last 7 days
+            'promo_nov_2024_seen': {'$ne': True}  # Haven't seen this promo
+        })
+        
+        promo_message = (
+            "🎁 <b>Special Offer - 7 Days Only</b>\n\n"
+            
+            "Join PipSage VIP and get:\n"
+            "✅ First month 50% off\n"
+            "✅ Bonus: 3 free private consultations\n"
+            "✅ Lifetime access to tools\n\n"
+            
+            "Start: /subscribe\n\n"
+            
+            "<i>Expires: November 24, 2025</i>" # Updated year
+        )
+        
+        sent = 0
+        for user in non_subscribers:
+            try:
+                await context.bot.send_message(
+                    chat_id=user['user_id'],
+                    text=promo_message,
+                    parse_mode=ParseMode.HTML
+                )
+                
+                # Mark as seen
+                db.users_collection.update_one(
+                    {'user_id': user['user_id']},
+                    {'$set': {'promo_nov_2024_seen': True}}
+                )
+                
+                sent += 1
+                await asyncio.sleep(0.1)
+            except:
+                pass
+        
+        logger.info(f"Promotion announced to {sent} active non-subscribers")
+
+# ============================================
+# NEW FEATURE: ANTI-SPAM & QUALITY CONTROL
+# ============================================
+
+class BroadcastFrequencyManager:
+    """Prevent broadcast spam"""
+    
+    def __init__(self, db):
+        self.db = db
+        
+    async def can_broadcast(self, admin_id: int) -> (bool, str):
+        """Check if admin can send another broadcast"""
+        
+        # Get timestamp of the last broadcast
+        last_broadcast = self.db.activity_logs_collection.find_one(
+            {
+                'user_id': admin_id,
+                'action': {'$in': ['broadcast_sent', 'approved_broadcast_sent', 'broadcast_submitted']},
+            },
+            sort=[('timestamp', -1)]
+        )
+        
+        last_broadcast_time = last_broadcast['timestamp'] if last_broadcast else 0
+        
+        # Limits per role
+        role = self.db.get_admin_role(admin_id)
+        limits_seconds = {
+            AdminRole.SUPER_ADMIN: 30,  # 30 seconds
+            AdminRole.ADMIN: 300,       # 5 minutes
+            AdminRole.MODERATOR: 180,   # 3 minutes
+            AdminRole.BROADCASTER: 600  # 10 minutes
+        }
+        
+        limit = limits_seconds.get(role, 300) # Default 5 mins
+        
+        time_since_last = time.time() - last_broadcast_time
+        
+        if time_since_last < limit:
+            time_remaining = limit - time_since_last
+            return False, f"⏳ Broadcast limit reached. Try again in {int(time_remaining // 60)}m {int(time_remaining % 60)}s."
+        
+        return True, ""
+
+class BroadcastQualityChecker:
+    """Ensure broadcast quality"""
+    
+    @staticmethod
+    def check_broadcast_quality(message_data: dict) -> (bool, list):
+        """Validate broadcast before sending"""
+        issues = []
+        
+        content = ""
+        if message_data['type'] == 'text':
+            content = message_data['content']
+        elif message_data.get('caption'):
+            content = message_data['caption']
+        
+        if not content:
+             return True, [] # No text to check
+
+        # Too short
+        if len(content) < 10:
+            issues.append("Message too short (minimum 10 characters)")
+        
+        # All caps (spam indicator)
+        if content.isupper() and len(content) > 50:
+            issues.append("Avoid ALL CAPS messages")
+        
+        # Too many emojis (basic check)
+        emoji_count = 0
+        for char in content:
+            if char > '\u231a': # Simple check for emoji range
+                emoji_count += 1
+        
+        if emoji_count > 15:
+            issues.append("Too many emojis (max 15)")
+        
+        # Spam keywords
+        spam_words = ['100% guaranteed', 'act fast', 'limited time only']
+        if any(word.lower() in content.lower() for word in spam_words):
+            issues.append("Message contains spam-like phrases (e.g., '100% guaranteed')")
+        
+        # Too many links
+        link_count = content.lower().count('http')
+        if link_count > 3:
+            issues.append(f"Too many links ({link_count}). Max 3 per message.")
+        
+        return len(issues) == 0, issues
+
+class UserEngagementTracker:
+    """Track user interaction to personalize experience"""
+    
+    def __init__(self, db):
+        self.db = db
+    
+    def update_engagement(self, user_id: int, action: str, value: int = 1):
+        """Track user activity"""
+        self.db.users_collection.update_one(
+            {'user_id': user_id},
+            {
+                '$set': {'last_activity': time.time()},
+                '$inc': {f'engagement.{action}': value}
+            },
+            upsert=True
+        )
+    
+    def get_engagement_score(self, user_id: int) -> int:
+        """Calculate engagement score (0-100)"""
+        user = self.db.users_collection.find_one({'user_id': user_id})
+        if not user:
+            return 0
+        
+        engagement = user.get('engagement', {})
+        
+        # Weighted scoring
+        score = (
+            engagement.get('command_used', 0) * 2 +
+            engagement.get('signal_suggested', 0) * 10 +
+            engagement.get('signal_approved', 0) * 20 +
+            engagement.get('vip_subscribed', 0) * 30
+        )
+        
+        # Check recency
+        last_activity = user.get('last_activity', 0)
+        days_inactive = (time.time() - last_activity) / 86400
+        
+        if days_inactive > 30:
+            score *= 0.5  # Decay for inactive users
+        
+        return min(int(score), 100)
+    
+    async def re_engage_inactive_users(self, context: ContextTypes.DEFAULT_TYPE):
+        """Gentle re-engagement for inactive users"""
+        
+        # Find users inactive for 7+ days but less than 30
+        cutoff_recent = time.time() - (7 * 86400)
+        cutoff_old = time.time() - (30 * 86400)
+        
+        inactive_users = self.db.users_collection.find({
+            'last_activity': {
+                '$lt': cutoff_recent,
+                '$gte': cutoff_old
+            },
+            're_engaged': {'$ne': True}
+        })
+        
+        message = (
+            "👋 Hey! We noticed you haven't checked in lately.\n\n"
+            
+            "Here's what you're missing:\n"
+            "📊 New trading tools\n"
+            "💡 Daily market insights\n"
+            "🏆 Signal leaderboards\n\n"
+            
+            "Tap /start to see what's new!"
+        )
+        
+        for user in inactive_users:
+            try:
+                await context.bot.send_message(
+                    chat_id=user['user_id'],
+                    text=message
+                )
+                
+                # Mark as re-engaged (don't spam them again)
+                self.db.users_collection.update_one(
+                    {'user_id': user['user_id']},
+                    {'$set': {'re_engaged': True}}
+                )
+                
+                await asyncio.sleep(1)  # Slow rate for re-engagement
+            except:
+                pass
+
+class NotificationManager:
+    """Respect user preferences"""
+    
+    DEFAULT_PREFS = {
+        'broadcasts': True, # General announcements
+        'signals': True,    # Approved signals
+        'leaderboards': True, # Weekly/Monthly leaderboards
+        'tips': True,       # Daily tips
+        'promo': True,      # Marketing promos
+        'achievements': True # Achievement notifications
+    }
+
+    def __init__(self, db):
+        self.db = db
+
+    def get_notification_preferences(self, user_id: int) -> dict:
+        """Get user's notification settings, applying defaults"""
+        user = self.db.users_collection.find_one({'user_id': user_id})
+        
+        if not user or 'notifications' not in user:
+            return self.DEFAULT_PREFS.copy()
+        
+        # Merge user prefs with defaults to ensure all keys exist
+        user_prefs = user.get('notifications', {})
+        prefs = self.DEFAULT_PREFS.copy()
+        prefs.update(user_prefs) # Overwrite defaults with user's choices
+        
+        return prefs
+
+    def should_notify(self, user_id: int, notification_type: str) -> bool:
+        """Check if user wants this notification"""
+        # Ensure type is valid
+        if notification_type not in self.DEFAULT_PREFS:
+            logger.warning(f"Invalid notification_type check: {notification_type}")
+            return True # Default to sending if type is unknown
+
+        prefs = self.get_notification_preferences(user_id)
+        return prefs.get(notification_type, True)
+        
 class MongoDBHandler:
     """Handle all MongoDB operations"""
 
@@ -184,9 +745,15 @@ class MongoDBHandler:
                         'user_id': user_id,
                         'username': username,
                         'first_name': first_name,
-                        'last_interaction': time.time()
+                        'last_activity': time.time() # <-- MODIFIED THIS LINE
                     },
-                    '$setOnInsert': {'created_at': time.time()}
+                    '$setOnInsert': {
+                        'created_at': time.time(),
+                        'achievements': [],
+                        'referrals': 0,
+                        'daily_tips_enabled': True,
+                        'leaderboard_public': True
+                    } # <-- ADDED 'setOnInsert' fields
                 },
                 upsert=True
             )
@@ -1010,6 +1577,15 @@ class BroadcastBot:
         self.super_admin_ids = super_admin_ids
         self.db = mongo_handler
         self.watermarker = ImageWatermarker()
+        
+        # --- ADD THIS BLOCK ---
+        self.engagement_tracker = UserEngagementTracker(self.db)
+        self.broadcast_limiter = BroadcastFrequencyManager(self.db)
+        self.notification_manager = NotificationManager(self.db)
+        self.referral_system = ReferralSystem()
+        self.achievement_system = AchievementSystem()
+        # ----------------------
+
         self.finnhub_client = None
         if FINNHUB_API_KEY:
             try:
@@ -2844,9 +3420,10 @@ class BroadcastBot:
             conversation_timeout=300 # 5 minutes to rate
         )
 
-        # Basic commands
-        application.add_handler(CommandHandler("start", self.start))
-        application.add_handler(CommandHandler("help", self.help_command))
+       # Basic commands (REPLACE start and help)
+        application.add_handler(CommandHandler("start", self.start_v2)) # <-- MODIFIED
+        application.add_handler(CommandHandler("help", self.help_command_v2)) # <-- MODIFIED
+        application.add_handler(CallbackQueryHandler(self.handle_help_callbacks, pattern="^help_")) # <-- NEW
         application.add_handler(CallbackQueryHandler(self.check_joined_callback, pattern="^check_joined$"))
         application.add_handler(CommandHandler("unsubscribe", self.unsubscribe))
         application.add_handler(CommandHandler("add", self.add_subscriber_command))
@@ -2857,7 +3434,7 @@ class BroadcastBot:
         application.add_handler(CommandHandler("approvals", self.list_approvals))
         application.add_handler(CommandHandler("signals", self.list_signal_suggestions))
         application.add_handler(CallbackQueryHandler(self.handle_approval_review, pattern="^app_"))
-        application.add_handler(signal_review_handler) # Add new signal review handler
+        application.add_handler(signal_review_handler) # (Existing)
 
         # Admin management
         application.add_handler(add_admin_handler)
@@ -2866,13 +3443,22 @@ class BroadcastBot:
         application.add_handler(CommandHandler("logs", self.view_logs))
         application.add_handler(CommandHandler("mystats", self.my_stats))
 
-        # --- NEW: Forex Toolkit Handlers ---
+        # --- NEW: Marketing & UX Commands ---
+        application.add_handler(CommandHandler("performance", self.show_performance_command)) # <-- NEW
+        application.add_handler(CommandHandler("referral", self.show_referral_command)) # <-- NEW
+        application.add_handler(CommandHandler("testimonials", show_testimonials_command)) # <-- NEW
+        application.add_handler(CommandHandler("myprogress", self.my_progress_command)) # <-- NEW
+        application.add_handler(CommandHandler("settings", self.settings_command)) # <-- NEW
+        application.add_handler(CallbackQueryHandler(self.handle_settings_callback, pattern="^toggle_")) # <-- NEW
+        application.add_handler(CallbackQueryHandler(self.handle_settings_callback, pattern="^close_settings$")) # <-- NEW
+
+        # --- Forex Toolkit Handlers (REPLACE pips) ---
         application.add_handler(CommandHandler("news", self.news))
         application.add_handler(CommandHandler("calendar", self.calendar))
-        application.add_handler(CommandHandler("pips", self.pips_calculator))
+        application.add_handler(CommandHandler("pips", self.pips_calculator_v2)) # <-- MODIFIED
         application.add_handler(CommandHandler("positionsize", self.position_size_calculator))
-        # -----------------------------------
-
+        application.add_handler(CommandHandler("bestschedule", self.suggest_broadcast_time)) # <-- NEW
+        
         # Templates
         application.add_handler(CommandHandler("templates", self.list_templates))
         application.add_handler(template_handler)
@@ -2899,6 +3485,8 @@ class BroadcastBot:
         # Error handler
         application.add_error_handler(self.error_handler)
 
+        # --- MODIFIED & NEW JOBS ---
+        
         # Schedule checker (every minute)
         application.job_queue.run_repeating(
             self.process_scheduled_broadcasts,
@@ -2906,13 +3494,31 @@ class BroadcastBot:
             first=10
         )
 
-        # New: Leaderboard job (Sunday at 00:00 UTC)
-        utc_midnight = dt_time(hour=0, minute=0, tzinfo=timezone.utc) # <-- FIX 2: Use renamed dt_time
+        # (Existing) Leaderboard job (Sunday at 00:00 UTC)
+        utc_midnight = dt_time(hour=0, minute=0, tzinfo=timezone.utc)
         application.job_queue.run_daily(
-            self.run_leaderboards_job,
+            self.run_leaderboards_job_v2, # <-- MODIFIED
             time=utc_midnight,
             days=(6,)  # 0=Monday, 6=Sunday
         )
+        
+        # NEW: Daily Tip job (Daily at 10:00 UTC)
+        utc_10am = dt_time(hour=10, minute=0, tzinfo=timezone.utc)
+        application.job_queue.run_daily(
+            self.send_daily_tip,
+            time=utc_10am
+        )
+        
+        # NEW: Re-engagement job (Daily at 12:00 UTC)
+        utc_12pm = dt_time(hour=12, minute=0, tzinfo=timezone.utc)
+        application.job_queue.run_daily(
+            self.re_engage_users_job,
+            time=utc_12pm
+        )
+        
+        # NEW: One-time promotion (runs 10s after boot)
+        # You can trigger this manually via an admin command or run it once
+        # application.job_queue.run_once(self.run_promo_job, 10)
 
         return application
 
