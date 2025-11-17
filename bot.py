@@ -3878,6 +3878,8 @@ class BroadcastBot:
         if cr_number in self.cr_numbers:
             # Mark as used
             self.db.mark_cr_number_as_used(cr_number, update.effective_user.id)
+
+            self.engagement_tracker.update_engagement(update.effective_user.id, 'vip_subscribed')
             
             await update.message.reply_text(
                 "I can verify that you are tagged under us. Please proceed to fund your account with a minimum of $50 and send me a screenshot."
