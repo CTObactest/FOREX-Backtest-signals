@@ -2464,6 +2464,9 @@ class BroadcastBot:
         failed_count = 0
 
         for user_id in target_users:
+            if not self.notification_manager.should_notify(user_id, 'signals'):
+                failed_count += 1
+                continue
             try:
                 if message_data['type'] == 'text':
                     full_text = message_data['content'] + attribution
@@ -2654,6 +2657,9 @@ class BroadcastBot:
         failed_count = 0
 
         for user_id in target_users:
+            if not self.notification_manager.should_notify(user_id, 'broadcasts'):
+                failed_count += 1
+                continue
             try:
                 if message_data['type'] == 'text':
                     await context.bot.send_message(
