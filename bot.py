@@ -1759,27 +1759,46 @@ class BroadcastBot:
 
         return limit, level
 
-    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /start command"""
+    async def start_v2(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Polished welcome with clear value prop & referral handling"""
         user = update.effective_user
         user_id = user.id
+        
+        # --- Referral Handling ---
+        if context.args and context.args[0].startswith("ref_"):
+            try:
+                referrer_id = int(context.args[0].split('_')[1])
+                if referrer_id != user_id:
+                    # Check if user is new (no 'created_at' yet)
+                    existing_user = self.db.users_collection.find_one({'user_id': user_id})
+                    if not existing_user or 'created_at' not in existing_user:
+                        # This is a new user, process referral
+                        await self.referral_system.process_referral(user_id, referrer_id, self.db, context)
+            except Exception as e:
+                logger.error(f"Error processing referral: {e}")
+        # -------------------------
 
-        # --- FORCE SUB CHECK ---
         if not await self.is_user_subscribed(user_id, context):
             await self.send_join_channel_message(user_id, context)
             return
-        # -----------------------
 
         self.db.add_user(user_id, user.username, user.first_name)
+        self.engagement_tracker.update_engagement(user_id, 'command_used') # Track engagement
+        
+        # Check if new user (first time)
+        user_doc = self.db.users_collection.find_one({'user_id': user_id})
+        is_new = not user_doc.get('welcomed', False)
 
         if self.is_admin(user_id):
+            # Admin Panel (unchanged from original 'start')
             role = self.get_admin_role(user_id)
             message = (
                 f"🔧 Admin Panel ({role.value.replace('_', ' ').title()})\n\n"
                 "📢 Broadcasting:\n"
                 "/broadcast - Start broadcasting\n"
                 "/schedule - Schedule a broadcast\n"
-                "/scheduled - View scheduled broadcasts\n\n"
+                "/scheduled - View scheduled broadcasts\n"
+                "/bestschedule - View optimal broadcast times\n\n" # <-- NEW
             )
 
             if self.has_permission(user_id, Permission.APPROVE_BROADCASTS):
@@ -1817,20 +1836,127 @@ class BroadcastBot:
             message += "/help - Show this message"
             await update.message.reply_text(message)
         else:
-            message = (
-                "👋 Welcome to PipSage — wise signals, steady gains!\n\n"
-                "You'll get curated trade signals and VIP updates here.\n"
-                "Enable notifications to get notified of broadcasts.\n\n"
-                "💡 Commands:\n"
-                "/subscribe - Join our VIP channels\n"
-                "/suggestsignal - Suggest a trading signal\n"
-                "/help - Show this message"
-            )
-            await update.message.reply_text(message)
+            if is_new:
+                # Special welcome for new users
+                welcome = (
+                    f"👋 <b>Welcome to PipSage, {user.first_name}!</b>\n\n"
+                    
+                    "📈 We're a community of <b>serious forex traders</b> who:\n"
+                    "• Share high-quality signals\n"
+                    "• Learn risk management together\n"
+                    "• Use powerful trading tools\n\n"
+                    
+                    "🎯 <b>Get Started:</b>\n"
+                    "/subscribe - Join VIP for premium signals\n"
+                    "/pips - Calculate your trades\n"
+                    "/positionsize - Calculate risk\n\n"
+                    
+                    "💡 <b>Become a Contributor:</b>\n"
+                    "Earn status by sharing quality signals with /suggestsignal\n\n"
+                    
+                    "<i>Enable notifications to never miss important updates!</i>"
+                )
+                
+                # Mark as welcomed
+                self.db.users_collection.update_one(
+                    {'user_id': user_id},
+                    {'$set': {'welcomed': True}}
+                )
+            else:
+                # Returning user
+                welcome = (
+                    f"Welcome back, {user.first_name}! 👋\n\n"
+                    
+                    "Quick access:\n"
+                    "/mystats - Your performance\n"
+                    "/myprogress - Your signal progress\n" # <-- NEW
+                    "/referral - Refer friends\n" # <-- NEW
+                    "/subscribe - VIP access\n"
+                    "/help - All commands"
+                )
+            
+            await update.message.reply_text(welcome, parse_mode=ParseMode.HTML)
 
-    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /help command"""
-        await self.start(update, context)
+    async def help_command_v2(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Interactive help menu"""
+        
+        self.engagement_tracker.update_engagement(update.effective_user.id, 'command_used')
+        
+        keyboard = [
+            [InlineKeyboardButton("📊 Trading Tools", callback_data="help_tools")],
+            [InlineKeyboardButton("💎 VIP & Signals", callback_data="help_vip")],
+            [InlineKeyboardButton("🏆 Community", callback_data="help_community")],
+            [InlineKeyboardButton("⚙️ My Account", callback_data="help_account")]
+        ]
+        
+        message = (
+            "❓ <b>PipSage Help</b>\n\n"
+            "What would you like to know about?"
+        )
+        
+        await update.message.reply_text(
+            message,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    async def handle_help_callbacks(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show contextual help based on selection"""
+        query = update.callback_query
+        await query.answer()
+        
+        help_texts = {
+            'help_tools': (
+                "🛠 <b>Trading Tools</b>\n\n"
+                "/pips - Calculate pip profit/loss\n"
+                "/positionsize - Calculate lot size for risk\n"
+                "/news - Latest forex news\n"
+                "/calendar - Economic events\n\n"
+                "💡 All tools work instantly!"
+            ),
+            'help_vip': (
+                "💎 <b>VIP & Signals</b>\n\n"
+                "/subscribe - Join VIP for premium signals\n"
+                "/suggestsignal - Suggest a signal\n"
+                "/performance - View our public stats\n"
+                "/testimonials - See what members say\n\n"
+                "Join: /subscribe"
+            ),
+            'help_community': (
+                "🏆 <b>Community Features</b>\n\n"
+                "/referral - Refer friends, earn rewards\n"
+                "/mystats - View your signal stats\n"
+                "/myprogress - Track your signal progress\n"
+            ),
+            'help_account': (
+                "⚙️ <b>My Account</b>\n\n"
+                "/settings - Manage notifications\n"
+                "/start - View your main menu\n"
+            ),
+            'help_main': (
+                "❓ <b>PipSage Help</b>\n\n"
+                "What would you like to know about?"
+            )
+        }
+        
+        text = help_texts.get(query.data, "Coming soon!")
+        
+        # Build buttons
+        if query.data == "help_main":
+            keyboard = [
+                [InlineKeyboardButton("📊 Trading Tools", callback_data="help_tools")],
+                [InlineKeyboardButton("💎 VIP & Signals", callback_data="help_vip")],
+                [InlineKeyboardButton("🏆 Community", callback_data="help_community")],
+                [InlineKeyboardButton("⚙️ My Account", callback_data="help_account")]
+            ]
+        else:
+            keyboard = [[InlineKeyboardButton("🔙 Back to Help", callback_data="help_main")]]
+        
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
     async def unsubscribe(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /unsubscribe command"""
@@ -4388,83 +4514,205 @@ class BroadcastBot:
         # Let's simplify and just return decimals and pip multiplier
         return pip_multiplier, decimals
 
-    async def pips_calculator(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /pips [pair] [entry] [exit]"""
-        try:
-            # --- FORCE SUB CHECK ---
-            if not await self.is_user_subscribed(update.effective_user.id, context):
-                await self.send_join_channel_message(update.effective_user.id, context)
-                return
-            # -----------------------
-            
-            if len(context.args) != 3:
-                await update.message.reply_text("Usage: /pips [pair] [entry_price] [exit_price]\nExample: /pips EURUSD 1.0850 1.0900")
-                return
+    async def pips_calculator_v2(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Enhanced with context and education"""
+        
+        self.engagement_tracker.update_engagement(update.effective_user.id, 'command_used')
+        
+        if not await self.is_user_subscribed(update.effective_user.id, context):
+            await self.send_join_channel_message(update.effective_user.id, context)
+            return
+        
+        if len(context.args) != 3:
+            # Helpful error message
+            example = (
+                "🧮 <b>Pip Calculator</b>\n\n"
+                
+                "<b>Usage:</b>\n"
+                "<code>/pips [PAIR] [ENTRY] [EXIT]</code>\n\n"
+                
+                "<b>Example:</b>\n"
+                "<code>/pips EURUSD 1.0850 1.0900</code>\n\n"
+                
+                "💡 This calculates profit/loss in pips.\n\n"
+                
+                "Related tools:\n"
+                "/positionsize - Calculate lot size based on risk"
+            )
+            await update.message.reply_text(example, parse_mode=ParseMode.HTML)
+            return
 
+        try:
             pair = context.args[0].upper()
             entry = float(context.args[1])
             exit_price = float(context.args[2])
             
             pip_multiplier, decimals = self.get_pip_value(pair)
-            
             pips = (exit_price - entry) / pip_multiplier
             
-            direction = "Profit" if pips > 0 else "Loss"
+            direction = "Profit 📈" if pips > 0 else "Loss 📉"
+            color = "🟢" if pips > 0 else "🔴"
             
-            message = (
-                f"🧮 Pip Calculator\n\n"
-                f"Pair: {pair}\n"
-                f"Entry: {entry}\n"
-                f"Exit: {exit_price}\n\n"
-                f"Result: <b>{pips:.1f} pips</b> ({direction})"
-            )
-            await update.message.reply_text(message, parse_mode=ParseMode.HTML)
-            
-        except ValueError:
-            await update.message.reply_text("❌ Invalid prices. Please use numbers.")
-        except Exception as e:
-            await update.message.reply_text(f"An error occurred: {e}")
-            
-    async def position_size_calculator(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /positionsize [pair] [risk_usd] [stop_loss_pips]"""
-        try:
-            # --- FORCE SUB CHECK ---
-            if not await self.is_user_subscribed(update.effective_user.id, context):
-                await self.send_join_channel_message(update.effective_user.id, context)
-                return
-            # -----------------------
-            
-            if len(context.args) != 3:
-                await update.message.reply_text("Usage: /positionsize [pair] [risk_usd] [stop_loss_pips]\nExample: /positionsize EURUSD 100 20")
-                return
-                
-            pair = context.args[0].upper()
-            risk_usd = float(context.args[1])
-            stop_loss_pips = float(context.args[2])
-
+            # Simplified value calculation
+            value_per_pip_lot = 10
             if "JPY" in pair:
-                pip_value_per_lot = 1000 # (0.01 * 100,000) / JPY_PRICE ~ 7 USD, but often calculated as 1000 JPY
-                # This is too complex without a live price. Let's assume $10 pip value.
-                value_per_pip_per_lot = 10 # Standard assumption
-            else:
-                value_per_pip_per_lot = 10 # Standard assumption for XXX/USD pairs ($0.0001 * 100,000)
+                 value_per_pip_lot = 1000 # This is complex, simplify
             
-            # (Risk USD) / (Stop Loss pips * Value per Pip) = Lot Size
-            lot_size = risk_usd / (stop_loss_pips * value_per_pip_per_lot)
+            estimated_value_0_1 = abs(pips) * (value_per_pip_lot * 0.1)
             
-            message = (
-                f"📐 Position Size Calculator\n\n"
-                f"Risk: ${risk_usd:,.2f}\n"
-                f"Stop Loss: {stop_loss_pips} pips\n"
-                f"Pair: {pair} (assuming ~$10/pip/lot)\n\n"
-                f"Recommended Lot Size: <b>{lot_size:.2f} lots</b>"
+            result = (
+                f"{color} <b>Pip Calculation Result</b>\n\n"
+                f"<b>Pair:</b> {pair}\n"
+                f"<b>Entry:</b> {entry}\n"
+                f"<b>Exit:</b> {exit_price}\n\n"
+                
+                f"<b>Result:</b> {pips:.1f} pips ({direction})\n"
+                f"<b>Est. Value (0.1 lots):</b> ~${estimated_value_0_1:.2f}\n\n"
+                
+                "💡 Calculate position size: /positionsize"
             )
-            await update.message.reply_text(message, parse_mode=ParseMode.HTML)
-
+            
+            await update.message.reply_text(result, parse_mode=ParseMode.HTML)
+            
         except ValueError:
-            await update.message.reply_text("❌ Invalid risk or pips. Please use numbers.")
-        except Exception as e:
-            await update.message.reply_text(f"An error occurred: {e}")
+            await update.message.reply_text(
+                "❌ Invalid numbers. Use format: /pips EURUSD 1.0850 1.0900"
+            )
+
+    async def send_daily_tip(self, context: ContextTypes.DEFAULT_TYPE):
+        """Optional daily trading tip - users can opt out"""
+        
+        tips = [
+            "💡 Tip: Never risk more than 1-2% of your account on a single trade.",
+            "💡 Tip: The best trades are often the ones you don't take. Patience wins.",
+            "💡 Tip: Set your stop loss BEFORE entering a trade, never after.",
+            "💡 Tip: High win rate doesn't mean profitable. Focus on risk/reward.",
+            "💡 Tip: Weekend gaps are real. Consider closing positions on Friday."
+        ]
+        
+        import random
+        tip = random.choice(tips) + "\n\n<i>Disable: /settings</i>"
+        
+        # Get all users (NotificationManager handles opt-outs)
+        all_users = self.db.get_all_users()
+        
+        for user_id in all_users:
+            if self.notification_manager.should_notify(user_id, 'tips'):
+                try:
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text=tip,
+                        parse_mode=ParseMode.HTML
+                    )
+                    await asyncio.sleep(0.1)
+                except:
+                    pass
+
+    # --- NEW: Settings Command & Handler ---
+    async def settings_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Let users control their experience"""
+        
+        self.engagement_tracker.update_engagement(update.effective_user.id, 'command_used')
+        user_id = update.effective_user.id
+        prefs = self.notification_manager.get_notification_preferences(user_id)
+        
+        user_doc = self.db.users_collection.find_one({'user_id': user_id}) or {}
+        leaderboard_public = user_doc.get('leaderboard_public', True)
+
+        # Build keyboard
+        keyboard = []
+        for key, desc in [
+            ('tips', 'Daily Tips'),
+            ('leaderboards', 'Leaderboards'),
+            ('promo', 'Promotions'),
+            ('signals', 'Signal Broadcasts')
+        ]:
+            if key in prefs:
+                status = '✅ ON' if prefs[key] else '❌ OFF'
+                keyboard.append([
+                    InlineKeyboardButton(f"{desc}: {status}", callback_data=f"toggle_notify_{key}")
+                ])
+
+        keyboard.append([InlineKeyboardButton(
+            f"Show in Leaderboard: {'✅ YES' if leaderboard_public else '❌ NO'}",
+            callback_data="toggle_leaderboard"
+        )])
+        keyboard.append([InlineKeyboardButton("Done", callback_data="close_settings")])
+        
+        message = (
+            "⚙️ <b>Your Settings</b>\n\n"
+            "Manage your notifications and privacy:\n"
+        )
+        
+        await update.message.reply_text(
+            message,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    async def handle_settings_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle toggling settings"""
+        query = update.callback_query
+        await query.answer()
+        user_id = query.from_user.id
+        
+        if query.data == "close_settings":
+            await query.edit_message_text("✅ Settings saved!")
+            return
+
+        toggle_type, key = query.data.split('_', 1)
+
+        if toggle_type == "toggle":
+            if key == "leaderboard":
+                # Toggle privacy
+                user_doc = self.db.users_collection.find_one({'user_id': user_id}) or {}
+                new_status = not user_doc.get('leaderboard_public', True)
+                self.db.users_collection.update_one(
+                    {'user_id': user_id},
+                    {'$set': {'leaderboard_public': new_status}}
+                )
+            else: # Notification toggle
+                prefs = self.notification_manager.get_notification_preferences(user_id)
+                new_status = not prefs.get(key, True)
+                self.db.users_collection.update_one(
+                    {'user_id': user_id},
+                    {'$set': {f'notifications.{key}': new_status}}
+                )
+
+        # Re-fetch and re-draw the menu
+        prefs = self.notification_manager.get_notification_preferences(user_id)
+        user_doc = self.db.users_collection.find_one({'user_id': user_id}) or {}
+        leaderboard_public = user_doc.get('leaderboard_public', True)
+        
+        keyboard = []
+        for key, desc in [
+            ('tips', 'Daily Tips'),
+            ('leaderboards', 'Leaderboards'),
+            ('promo', 'Promotions'),
+            ('signals', 'Signal Broadcasts')
+        ]:
+            if key in prefs:
+                status = '✅ ON' if prefs[key] else '❌ OFF'
+                keyboard.append([
+                    InlineKeyboardButton(f"{desc}: {status}", callback_data=f"toggle_notify_{key}")
+                ])
+
+        keyboard.append([InlineKeyboardButton(
+            f"Show in Leaderboard: {'✅ YES' if leaderboard_public else '❌ NO'}",
+            callback_data="toggle_leaderboard"
+        )])
+        keyboard.append([InlineKeyboardButton("Done", callback_data="close_settings")])
+        
+        message = (
+            "⚙️ <b>Your Settings</b>\n\n"
+            "Manage your notifications and privacy:\n"
+        )
+        
+        await query.edit_message_text(
+            message,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
 def main():
     """Main function"""
