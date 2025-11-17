@@ -2212,26 +2212,41 @@ class BroadcastBot:
             message_data['content'] = message.text
 
         elif message.photo:
-            # --- 2. VALIDATE IMAGE ---
-            photo = message.photo[-1] # Get largest photo
-            is_valid, reason, ocr_text = await self.validate_signal_image(photo)
-            
-            if not is_valid:
-                await update.message.reply_text(
-                    f"❌ <b>Signal Rejected (Unclear Image)</b>\n\n"
-                    f"<b>Reason:</b> {reason}\n\n"
-                    f"Please send a clear, un-cluttered screenshot with all required info.",
-                    parse_mode=ParseMode.HTML
-                )
-                return ConversationHandler.END
-
+            photo = message.photo[-1]
             message_data['type'] = 'photo'
             message_data['file_id'] = photo.file_id
             message_data['caption'] = message.caption
+
+            # --- 1. VALIDATE CAPTION FIRST ---
+            if message.caption:
+                is_valid, reason = self.validate_signal_format(message.caption)
+                if not is_valid:
+                    # Caption is present but invalid, reject it
+                    await update.message.reply_text(
+                        f"❌ <b>Signal Rejected (Invalid Caption)</b>\n\n"
+                        f"<b>Reason:</b> {reason}\n\n"
+                        f"Please check your caption format and resubmit.",
+                        parse_mode=ParseMode.HTML
+                    )
+                    return ConversationHandler.END
+                # If caption is valid, we'll fall through to the save block
             
-            # OPTIONAL: Add extracted text to caption if caption is empty
-            if not message_data['caption'] and ocr_text:
-                message_data['caption'] = f"[Extracted Text]:\n{ocr_text[:500]}..."
+            # --- 2. IF NO CAPTION, VALIDATE IMAGE (OCR) ---
+            else: 
+                is_valid, reason, ocr_text = await self.validate_signal_image(photo)
+                
+                if not is_valid:
+                    await update.message.reply_text(
+                        f"❌ <b>Signal Rejected (Unclear Image)</b>\n\n"
+                        f"<b>Reason:</b> {reason}\n\n"
+                        f"Please send a clear screenshot (or add a caption with the signal details).",
+                        parse_mode=ParseMode.HTML
+                    )
+                    return ConversationHandler.END
+                
+                # If OCR was successful, add extracted text as caption
+                if not message_data['caption'] and ocr_text:
+                    message_data['caption'] = f"[Extracted Text]:\n{ocr_text[:500]}..."
 
         elif message.video:
             # We can't validate video, so we just accept it
