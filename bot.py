@@ -4630,6 +4630,69 @@ class BroadcastBot:
                 "❌ Invalid numbers. Use format: /pips EURUSD 1.0850 1.0900"
             )
 
+    async def position_size_calculator(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Calculate position size based on risk."""
+        
+        self.engagement_tracker.update_engagement(update.effective_user.id, 'command_used')
+        
+        if not await self.is_user_subscribed(update.effective_user.id, context):
+            await self.send_join_channel_message(update.effective_user.id, context)
+            return
+        
+        if len(context.args) != 3:
+            example = (
+                "📏 <b>Position Size Calculator</b>\n\n"
+                
+                "<b>Usage:</b>\n"
+                "<code>/positionsize [ACCOUNT_BALANCE] [RISK_PERCENT] [SL_PIPS]</code>\n\n"
+                
+                "<b>Example:</b>\n"
+                "<code>/positionsize 10000 1 30</code>\n"
+                "(Calculates lot size for a $10,000 account, risking 1% with a 30-pip stop loss)\n\n"
+                
+                "💡 Assumes a standard pip value of $10 per 1.0 lot for XXX/USD pairs."
+            )
+            await update.message.reply_text(example, parse_mode=ParseMode.HTML)
+            return
+
+        try:
+            account_balance = float(context.args[0])
+            risk_percent = float(context.args[1])
+            sl_pips = float(context.args[2])
+            
+            if account_balance <= 0 or risk_percent <= 0 or sl_pips <= 0:
+                await update.message.reply_text("❌ All values must be positive numbers.")
+                return
+
+            # --- Calculation ---
+            # 1. Amount to risk
+            risk_amount_usd = account_balance * (risk_percent / 100)
+            
+            # 2. Value per pip
+            value_per_pip = risk_amount_usd / sl_pips
+            
+            # 3. Lot size (assuming $10 per pip for a 1.0 lot)
+            pip_value_per_lot = 10.0
+            lot_size = value_per_pip / pip_value_per_lot
+            
+            # --- Result ---
+            result = (
+                f"✅ <b>Position Size Calculation</b>\n\n"
+                f"<b>Account Balance:</b> ${account_balance:,.2f}\n"
+                f"<b>Risk Percent:</b> {risk_percent}%\n"
+                f"<b>Stop Loss:</b> {sl_pips} pips\n\n"
+                
+                f"<b>Amount to Risk:</b> ${risk_amount_usd:,.2f}\n"
+                f"<b>Required Lot Size:</b> <code>{lot_size:.2f}</code>"
+            )
+            
+            await update.message.reply_text(result, parse_mode=ParseMode.HTML)
+            
+        except ValueError:
+            await update.message.reply_text(
+                "❌ Invalid numbers. Use format: /positionsize 10000 1 30"
+            )
+
     async def send_daily_tip(self, context: ContextTypes.DEFAULT_TYPE):
         """Optional daily trading tip - users can opt out"""
         
