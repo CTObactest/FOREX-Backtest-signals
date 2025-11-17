@@ -3522,6 +3522,97 @@ class BroadcastBot:
 
         return application
 
+    # --- Wrapper for re-engagement job ---
+    async def re_engage_users_job(self, context: ContextTypes.DEFAULT_TYPE):
+        await self.engagement_tracker.re_engage_inactive_users(context)
+
+    # --- Wrapper for promo job ---
+    async def run_promo_job(self, context: ContextTypes.DEFAULT_TYPE):
+        await PromotionManager.announce_promo(context, self.db)
+
+    # --- Wrappers for new commands ---
+    async def show_performance_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await PerformanceTransparency.show_verified_performance(update, context, self.db)
+
+    async def show_referral_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        bot_username = (await context.bot.get_me()).username
+        await self.referral_system.show_referral_stats(update.effective_user.id, bot_username, self.db, update)
+
+    async def my_progress_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show user's improvement over time"""
+        user_id = update.effective_user.id
+        
+        # Get historical data
+        current_stats = self.db.get_user_signal_stats(user_id)
+        current_rating = self.db.get_user_average_rating(user_id)
+        
+        message = (
+            "📈 <b>Your Progress Report</b>\n\n"
+            f"Current Rating: {current_rating:.1f}⭐\n"
+            f"Signals Approved: {current_stats['approved']}/{current_stats['total']}\n"
+            f"Success Rate: {current_stats['rate']:.1f}%\n\n"
+        )
+        
+        # Add motivational element
+        if current_rating >= 4.5:
+            message += "🎯 <b>Outstanding!</b> You're in the elite tier!\n"
+        elif current_rating >= 4.0:
+            message += "💎 <b>Excellent work!</b> Keep pushing for elite status!\n"
+        elif current_rating >= 3.0:
+            message += "📊 <b>Good progress!</b> Focus on signal quality to level up!\n"
+        else:
+            message += "💪 <b>Keep learning!</b> Focus on quality signals!\n"
+        
+        message += "\nUse /mystats for detailed statistics"
+        
+        await update.message.reply_text(message, parse_mode=ParseMode.HTML)
+
+    async def suggest_broadcast_time(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Help admins choose optimal broadcast time"""
+        
+        # Analyze when users are most active
+        pipeline = [
+            {
+                '$match': {'last_activity': {'$exists': True, '$ne': None}}
+            },
+            {
+                '$project': {
+                    'hour': {
+                        '$hour': {
+                            '$toDate': {'$multiply': ['$last_activity', 1000]}
+                        }
+                    }
+                }
+            },
+            {
+                '$group': {
+                    '_id': '$hour',
+                    'count': {'$sum': 1}
+                }
+            },
+            {'$sort': {'count': -1}},
+            {'$limit': 3}
+        ]
+        
+        peak_hours = list(self.db.users_collection.aggregate(pipeline))
+        
+        if peak_hours:
+            message = (
+                "📊 <b>Optimal Broadcast Times (UTC)</b>\n\n"
+                "Based on user activity patterns:\n\n"
+            )
+            
+            for i, hour_data in enumerate(peak_hours):
+                hour_utc = hour_data['_id']
+                user_count = hour_data['count']
+                message += f"{i+1}. {hour_utc:02d}:00 UTC ({user_count} active users)\n"
+            
+            message += "\n💡 Schedule broadcasts during these windows for maximum reach!"
+        else:
+            message = "Not enough user activity data yet."
+        
+        await update.message.reply_text(message, parse_mode=ParseMode.HTML)
+        
     async def handle_greeting(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle greetings"""
         user_id = update.effective_user.id
