@@ -1328,44 +1328,117 @@ class BroadcastBot:
         else:
             await update.message.reply_text(message)
 
-    async def suggest_signal_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Start signal suggestion conversation, checking limits first"""
+    async def suggest_signal_start_v2(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Enhanced signal suggestion with quality template"""
         user_id = update.effective_user.id
-
-        # --- FORCE SUB CHECK ---
         if not await self.is_user_subscribed(user_id, context):
             await self.send_join_channel_message(user_id, context)
             return ConversationHandler.END
-        # -----------------------
 
-        # Get user's limit and current usage
         limit, level = self.get_user_suggestion_limit(user_id)
         today_count = self.db.get_user_suggestions_today(user_id)
-
         remaining = limit - today_count
 
         if remaining <= 0:
-            await update.message.reply_text(
-                f"❌ You have reached your daily suggestion limit.\n\n"
-                f"Your Level: {level} (Limit: {limit}/day)\n"
-                f"Suggestions Made Today: {today_count}\n\n"
-                "Limits reset at Midnight UTC."
+            # Show when limits reset + tips to improve rating
+            avg_rating = self.db.get_user_average_rating(user_id)
+            message = (
+                f"❌ Daily limit reached ({today_count}/{limit})\n\n"
+                f"📊 Your Stats:\n"
+                f"Level: {level}\n"
+                f"Avg Rating: {avg_rating:.1f}⭐\n\n"
             )
+        
+            if avg_rating < 3:
+                message += (
+                    "💡 <b>Improve your rating to unlock more signals:</b>\n"
+                    "• Include clear entry/exit points\n"
+                    "• Add stop loss and take profit\n"
+                    "• Explain your reasoning\n"
+                    "• Use proper pair format (e.g., EUR/USD)\n\n"
+                )
+        
+            message += "⏰ Limits reset daily at 00:00 UTC"
+        
+            await update.message.reply_text(message, parse_mode=ParseMode.HTML)
             return ConversationHandler.END
 
-        # User has remaining suggestions, show updated prompt
-        message = (
-            "💡 Suggest a Trading Signal\n\n"
-            f"Your Level: {level}\n"
-            f"Suggestions Remaining Today: {remaining} / {limit}\n\n"
-            "Please send me your signal suggestion.\n"
-            "You can send text, photos, or documents.\n\n"
-            "Your suggestion will be reviewed by Super Admins.\n\n"
-            "Send /cancel to cancel."
+        # Provide template for quality signals
+        template = (
+            "💡 <b>Submit a Quality Signal</b>\n\n"
+            f"📊 Level: {level} ({remaining}/{limit} remaining)\n\n"
+        
+            "<b>Use this format for best results:</b>\n"
+            "<code>PAIR: EUR/USD\n"
+            "DIRECTION: BUY/SELL\n"
+            "ENTRY: 1.0850\n"
+            "SL: 1.0820 (-30 pips)\n"
+            "TP1: 1.0900 (+50 pips)\n"
+            "TP2: 1.0950 (+100 pips)\n"
+            "REASON: (Why this trade?)</code>\n\n"
+        
+            "📸 Or send a clear screenshot\n"
+            "⚠️ Low-quality signals may be rejected\n\n"
+            "Send /cancel to cancel"
         )
-        await update.message.reply_text(message)
+    
+        keyboard = [[InlineKeyboardButton("📋 View Example", callback_data="show_signal_example")]]
+    
+        await update.message.reply_text(
+            template,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
         return WAITING_SIGNAL_MESSAGE
 
+    async def show_signal_example(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show example of good signal"""
+        query = update.callback_query
+        await query.answer()
+    
+        example = (
+            "✅ <b>Example of 5-Star Signal</b>\n\n"
+        
+            "<code>PAIR: GBP/USD\n"
+            "DIRECTION: BUY\n"
+            "ENTRY: 1.2650-1.2670\n"
+            "SL: 1.2600 (-60 pips)\n"
+            "TP1: 1.2750 (+90 pips)\n"
+            "TP2: 1.2850 (+190 pips)\n\n"
+        
+            "REASON:\n"
+            "- Bullish divergence on 4H\n"
+            "- Support at 1.2650\n"
+            "- USD weakness ahead of FOMC\n"
+            "- Risk/Reward: 1:3</code>\n\n"
+        
+            "Clear, specific, and well-reasoned! ⭐⭐⭐⭐⭐"
+        )
+    
+        await query.edit_message_text(example, parse_mode=ParseMode.HTML)
+
+    # Auto-validate signal format
+    def validate_signal_format(self, text: str) -> (bool, str):
+        """Check if signal meets minimum quality standards"""
+        required_elements = ['pair', 'entry', 'sl']
+        text_lower = text.lower()
+    
+        missing = []
+        for element in required_elements:
+            if element not in text_lower:
+                missing.append(element.upper())
+    
+        if missing:
+            return False, f"Missing required fields: {', '.join(missing)}"
+    
+        # Check for common pairs
+        pairs = ['EUR', 'USD', 'GBP', 'JPY', 'AUD', 'NZD', 'CAD', 'CHF', 'XAU', 'GOLD']
+        has_pair = any(pair in text.upper() for pair in pairs)
+    
+        if not has_pair:
+            return False, "Could not identify trading pair. Use format like 'EUR/USD'"
+    
+            return True, "Valid"
     async def receive_signal_suggestion(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Receive signal suggestion message"""
         user = update.effective_user
