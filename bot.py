@@ -4011,6 +4011,8 @@ class BroadcastBot:
         if action == "approve":
             self.db.add_subscriber(user_id)
             self.db.log_activity(admin_id, 'vip_approved', {'user_id': user_id})
+
+            self.engagement_tracker.update_engagement(user_id, 'vip_subscribed')
             
             await query.edit_message_text(f"{query.message.text}\n\n--- ✅ Approved by {query.from_user.first_name or admin_id} ---")
             
