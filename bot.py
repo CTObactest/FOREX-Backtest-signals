@@ -3821,6 +3821,7 @@ class BroadcastBot:
         application.add_handler(CommandHandler("settings", self.settings_command)) # <-- NEW
         application.add_handler(CallbackQueryHandler(self.handle_settings_callback, pattern="^toggle_")) # <-- NEW
         application.add_handler(CallbackQueryHandler(self.handle_settings_callback, pattern="^close_settings$")) # <-- NEW
+        application.add_handler(CallbackQueryHandler(self.admin_button_handler, pattern='^admin_'))
 
         # --- Forex Toolkit Handlers (REPLACE pips) ---
         application.add_handler(CommandHandler("news", self.news))
