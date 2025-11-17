@@ -3095,6 +3095,7 @@ class BroadcastBot:
         """Handle target audience choice and send broadcast"""
         query = update.callback_query
         await query.answer()
+        user_id = query.from_user.id
 
         # If this is a scheduled broadcast, finalize it
         if 'scheduled_time' in context.user_data:
