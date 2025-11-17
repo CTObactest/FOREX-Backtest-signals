@@ -4376,15 +4376,37 @@ class BroadcastBot:
 
         if self.is_admin(user_id):
             # --- Admin Statistics ---
-            stats = self.db.get_admin_stats(user_id)
-            stats_text = (
+            admin_stats = self.db.get_admin_stats(user_id)
+            admin_stats_text = (
                 f"📊 Your Admin Statistics\n\n"
-                f"📢 Broadcasts Sent: {stats.get('broadcasts', 0)}\n"
-                f"📝 Templates Created: {stats.get('templates', 0)}\n"
-                f"⏰ Broadcasts Scheduled: {stats.get('scheduled', 0)}\n"
-                f"⭐ Signals Rated: {stats.get('ratings', 0)}"
+                f"📢 Broadcasts Sent: {admin_stats.get('broadcasts', 0)}\n"
+                f"📝 Templates Created: {admin_stats.get('templates', 0)}\n"
+                f"⏰ Broadcasts Scheduled: {admin_stats.get('scheduled', 0)}\n"
+                f"⭐ Signals Rated: {admin_stats.get('ratings', 0)}"
             )
-            await update.message.reply_text(stats_text)
+            
+            # --- Regular User Statistics (Added for Admins) ---
+            signal_stats = self.db.get_user_signal_stats(user_id)
+            avg_rating = self.db.get_user_average_rating(user_id)
+            limit, level = self.get_user_suggestion_limit(user_id)
+            rank, total_ranked = self.db.get_user_suggester_rank(user_id)
+
+            rank_str = f"#{rank} of {total_ranked}" if rank > 0 else "Unranked"
+
+            user_stats_text = (
+                f"📈 Your Signal Stats\n\n"
+                f"💡 Total Signals Suggested: {signal_stats['total']}\n"
+                f"✅ Approved Signals: {signal_stats['approved']}\n"
+                f"🎯 Approval Rate: {signal_stats['rate']:.1f}%\n\n"
+                f"⭐ Average Rating: {avg_rating:.2f} stars\n"
+                f"🏆 Current Rank: {rank_str}\n"
+                f"🏅 Current Level: {level}"
+            )
+
+            # Combine both texts
+            full_stats_text = f"{admin_stats_text}\n\n{'-'*30}\n\n{user_stats_text}"
+            
+            await update.message.reply_text(full_stats_text)
         
         else:
             # --- Regular User Statistics ---
