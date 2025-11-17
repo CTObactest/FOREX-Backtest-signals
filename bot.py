@@ -3096,12 +3096,9 @@ class BroadcastBot:
         query = update.callback_query
         await query.answer()
         user_id = query.from_user.id
-
-        # If this is a scheduled broadcast, finalize it
         if 'scheduled_time' in context.user_data:
             return await self.finalize_scheduled_broadcast(update, context)
 
-        # Get target
         target_map = {
             'target_all': 'all',
             'target_subscribers': 'subscribers',
@@ -3109,15 +3106,13 @@ class BroadcastBot:
             'target_admins': 'admins'
         }
         target = target_map.get(query.data, 'all')
-        
-        # --- PREPARE MESSAGE DATA (Moved this block up) ---
+    
         broadcast_message = context.user_data['broadcast_message']
         inline_buttons = context.user_data.get('inline_buttons')
         protect_content = context.user_data.get('protect_content', False)
         use_watermark = context.user_data.get('use_watermark', False)
         watermarked_image = context.user_data.get('watermarked_image')
 
-        # Prepare message data dictionary
         message_data = {
             'type': 'text',
             'content': None,
@@ -3132,7 +3127,6 @@ class BroadcastBot:
             message_data['type'] = 'photo'
             message_data['caption'] = broadcast_message.caption
             if use_watermark and watermarked_image:
-                 # Need to get a file_id first
                 try:
                     sent_photo = await context.bot.send_photo(
                         chat_id=user_id,
@@ -3154,9 +3148,7 @@ class BroadcastBot:
             message_data['type'] = 'document'
             message_data['file_id'] = broadcast_message.document.file_id
             message_data['caption'] = broadcast_message.caption
-        # --- END PREPARE MESSAGE DATA ---
-        
-        # --- ADD QUALITY CHECK ---
+    
         is_quality, issues = BroadcastQualityChecker.check_broadcast_quality(message_data)
         if not is_quality:
             issues_text = "\n".join([f"• {issue}" for issue in issues])
@@ -3165,18 +3157,12 @@ class BroadcastBot:
                 "Please /cancel and try again."
             )
             return ConversationHandler.END
-        # -------------------------
-
-        # Check if broadcast needs approval
         if self.needs_approval(user_id):
-            
-            # --- ADD FREQUENCY CHECK FOR APPROVALS ---
+        
             can_send, reason = await self.broadcast_limiter.can_broadcast(user_id)
             if not can_send:
                 await query.edit_message_text(reason)
                 return ConversationHandler.END
-            # -------------------------------------
-
             creator_name = query.from_user.first_name or query.from_user.username or str(user_id)
             approval_id = self.db.create_broadcast_approval(
                 message_data, # Use the prepared dict
@@ -3186,7 +3172,6 @@ class BroadcastBot:
             )
 
             if approval_id:
-                # Log submission as an activity
                 self.db.log_activity(user_id, 'broadcast_submitted', {'approval_id': approval_id})
                 await query.edit_message_text(
                     "⏳ Broadcast submitted for approval!\n\n"
@@ -3198,32 +3183,40 @@ class BroadcastBot:
                 await query.edit_message_text("❌ Failed to submit broadcast. Please try again.")
 
             return ConversationHandler.END
-
-        # Direct broadcast (Super Admin or Moderator)
-        
-        # --- ADD FREQUENCY CHECK FOR DIRECT BROADCAST ---
         can_send, reason = await self.broadcast_limiter.can_broadcast(user_id)
         if not can_send:
             await query.edit_message_text(reason)
             return ConversationHandler.END
-        # ----------------------------------------------
-        
+
         all_users = self.db.get_all_users()
-        # ... (rest of target logic) ...
-        # ...
+        subscribers = self.db.get_all_subscribers()
+        admin_ids = self.db.get_all_admin_ids()
 
-        # ... (rest of message formatting) ...
+        if target == 'all':
+            target_users = all_users
+            audience_name = "All Users"
+        elif target == 'subscribers':
+            target_users = subscribers
+            audience_name = "Subscribers"
+        elif target == 'nonsubscribers':
+            target_users = all_users - subscribers
+            audience_name = "Non-subscribers"
+        elif target == 'admins':
+            target_users = admin_ids
+            audience_name = "Admins"
+        else:
+            target_users = all_users
+            audience_name = "All Users"
+        message = f"📢 Broadcasting to {audience_name} ({len(target_users)} users)..."
         await query.edit_message_text(message)
-
+    
         success_count = 0
         failed_count = 0
 
-        for user_id_to_send in target_users: # Renamed var to avoid conflict
-            # --- ADD NOTIFICATION PREF CHECK ---
+        for user_id_to_send in target_users: 
             if not self.notification_manager.should_notify(user_id_to_send, 'broadcasts'):
                 failed_count += 1
                 continue
-            # -----------------------------------
             try:
                 if message_data['type'] == 'text':
                     await context.bot.send_message(
@@ -3263,7 +3256,6 @@ class BroadcastBot:
                 logger.error(f"Failed to send to {user_id_to_send}: {e}")
                 failed_count += 1
 
-        # Log the broadcast
         self.db.log_activity(user_id, 'broadcast_sent', {
             'target': audience_name,
             'success': success_count,
@@ -3281,7 +3273,7 @@ class BroadcastBot:
 
         await context.bot.send_message(chat_id=query.from_user.id, text=summary)
         return ConversationHandler.END
-
+    
     async def notify_approvers_new_broadcast(self, context: ContextTypes.DEFAULT_TYPE, approval_id: str):
         """Notify approvers of new broadcast pending approval"""
         approval = self.db.get_approval_by_id(approval_id)
