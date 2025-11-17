@@ -2298,14 +2298,22 @@ class BroadcastBot:
         await query.answer()
 
         if query.from_user.id not in self.super_admin_ids:
-            await query.edit_message_text("❌ Only Super Admins can review suggestions.")
+            error_text = "❌ Only Super Admins can review suggestions."
+            if query.message.text:
+                await query.edit_message_text(text=error_text)
+            elif query.message.caption:
+                await query.edit_message_caption(caption=error_text)
             return ConversationHandler.END
 
         action, suggestion_id = query.data.split('_', 2)[1:]
 
         suggestion = self.db.get_suggestion_by_id(suggestion_id)
         if not suggestion:
-            await query.edit_message_text("❌ Suggestion not found.")
+            error_text = "❌ Suggestion not found."
+            if query.message.text:
+                await query.edit_message_text(text=error_text)
+            elif query.message.caption:
+                await query.edit_message_caption(caption=error_text)
             return ConversationHandler.END
 
         if action == "approve":
