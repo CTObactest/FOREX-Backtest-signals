@@ -3160,6 +3160,9 @@ class BroadcastBot:
 
                     # Send messages
                     for user_id in target_users:
+                        if not self.notification_manager.should_notify(user_id, 'broadcasts'):
+                            failed_count += 1
+                            continue
                         try:
                             if message_data['type'] == 'text':
                                 await context.bot.send_message(
