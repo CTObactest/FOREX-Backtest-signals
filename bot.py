@@ -1790,66 +1790,49 @@ class BroadcastBot:
         is_new = not user_doc.get('welcomed', False)
 
         if self.is_admin(user_id):
-            # Admin Panel (unchanged from original 'start')
+            # Admin Panel with inline buttons
             role = self.get_admin_role(user_id)
-            message = (
-                f"🔧 Admin Panel ({role.value.replace('_', ' ').title()})\n\n"
-                "📢 Broadcasting:\n"
-                "/broadcast - Start broadcasting\n"
-                "/schedule - Schedule a broadcast\n"
-                "/scheduled - View scheduled broadcasts\n"
-                "/bestschedule - View optimal broadcast times\n\n" # <-- NEW
+            admin_main_menu_text = (
+                f"🔧 <b>Admin Panel</b> ({role.value.replace('_', ' ').title()})\n\n"
+                "Welcome to the Admin Control Center. Select a category to manage."
             )
 
+            keyboard = [
+                [InlineKeyboardButton("📢 Broadcasting", callback_data='admin_broadcast')],
+            ]
             if self.has_permission(user_id, Permission.APPROVE_BROADCASTS):
-                message += (
-                    "✅ Approval System:\n"
-                    "/approvals - View pending approvals\n"
-                    "/signals - View signal suggestions\n\n"
-                )
-
-            message += (
-                "📝 Templates:\n"
-                "/templates - Manage templates\n"
-                "/savetemplate - Save current as template\n\n"
-                "👥 User Management:\n"
-                "/add <user_id> - Add subscriber\n"
-                "/stats - View statistics\n"
-                "/subscribers - List subscribers\n\n"
-            )
-
+                keyboard.append([InlineKeyboardButton("✅ Approval System", callback_data='admin_approvals')])
+            
+            keyboard.append([InlineKeyboardButton("📝 Templates", callback_data='admin_templates')])
+            keyboard.append([InlineKeyboardButton("👥 User Management", callback_data='admin_users')])
+            
             if self.has_permission(user_id, Permission.MANAGE_ADMINS):
-                message += (
-                    "👨‍💼 Admin Management:\n"
-                    "/addadmin - Add new admin\n"
-                    "/removeadmin - Remove admin\n"
-                    "/admins - List all admins\n\n"
-                )
-
+                keyboard.append([InlineKeyboardButton("👨‍💼 Admin Management", callback_data='admin_admins')])
+            
             if self.has_permission(user_id, Permission.VIEW_LOGS):
-                message += (
-                    "📊 Monitoring:\n"
-                    "/logs - View activity logs\n"
-                    "/mystats - Your statistics\n\n"
-                )
+                keyboard.append([InlineKeyboardButton("📊 Monitoring", callback_data='admin_monitoring')])
+            
+            keyboard.append([InlineKeyboardButton("❓ Help", callback_data='admin_help')]) # General help for admin
 
-            message += "/help - Show this message"
-            await update.message.reply_text(message)
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await update.message.reply_text(admin_main_menu_text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
         else:
             if is_new:
                 # Special welcome for new users
                 welcome = (
                     f"👋 <b>Welcome to PipSage, {user.first_name}!</b>\n\n"
                     
-                    "📈 We're a community of <b>serious forex traders</b> who:\n"
+                    "📈 We're a community of <b>serious traders</b> who:\n"
                     "• Share high-quality signals\n"
                     "• Learn risk management together\n"
                     "• Use powerful trading tools\n\n"
                     
                     "🎯 <b>Get Started:</b>\n"
                     "/subscribe - Join VIP for premium signals\n"
-                    "/pips - Calculate your trades\n"
-                    "/positionsize - Calculate risk\n\n"
+                    "/positionsize - Calculate lot size for risk\n"
+                    "/settings - Manage your notifications\n"
+                    "/help - Show all commands\n\n"
                     
                     "💡 <b>Become a Contributor:</b>\n"
                     "Earn status by sharing quality signals with /suggestsignal\n\n"
@@ -1876,6 +1859,122 @@ class BroadcastBot:
                 )
             
             await update.message.reply_text(welcome, parse_mode=ParseMode.HTML)
+
+    async def admin_button_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        await query.answer() # Acknowledge the button press
+        user_id = query.from_user.id
+        
+        # Ensure only admins can use these buttons
+        if not self.is_admin(user_id):
+            await query.edit_message_text("You are not authorized to use these commands.")
+            return
+
+        data = query.data
+        message_text = ""
+        keyboard = []
+
+        # Define commands for each category
+        commands = {
+            'admin_broadcast': {
+                'title': "📢 Broadcasting Commands",
+                'description': "Manage sending messages to your subscribers.",
+                'cmds': [
+                    "/broadcast - Start broadcasting",
+                    "/schedule - Schedule a broadcast",
+                    "/scheduled - View scheduled broadcasts",
+                    "/bestschedule - View optimal broadcast times",
+                ]
+            },
+            'admin_approvals': {
+                'title': "✅ Approval System Commands",
+                'description': "Review and approve pending content.",
+                'cmds': [
+                    "/approvals - View pending approvals",
+                    "/signals - View signal suggestions",
+                ]
+            },
+            'admin_templates': {
+                'title': "📝 Template Management",
+                'description': "Create and manage message templates.",
+                'cmds': [
+                    "/templates - Manage templates",
+                    "/savetemplate - Save current as template",
+                ]
+            },
+            'admin_users': {
+                'title': "👥 User Management Commands",
+                'description': "Manage your bot's subscribers.",
+                'cmds': [
+                    "/add <user_id> - Add subscriber",
+                    "/stats - View statistics",
+                    "/subscribers - List subscribers",
+                ]
+            },
+            'admin_admins': {
+                'title': "👨‍💼 Admin Management Commands",
+                'description': "Manage other administrators.",
+                'cmds': [
+                    "/addadmin - Add new admin",
+                    "/removeadmin - Remove admin",
+                    "/admins - List all admins",
+                ]
+            },
+            'admin_monitoring': {
+                'title': "📊 Monitoring & Analytics",
+                'description': "Access logs and performance metrics.",
+                'cmds': [
+                    "/logs - View activity logs",
+                    "/mystats - Your statistics",
+                ]
+            },
+            'admin_help': {
+                'title': "❓ Admin Help",
+                'description': "General information and assistance for admins.",
+                'cmds': [
+                    "Need specific help? Contact support or refer to the documentation.",
+                ]
+            }
+        }
+
+        if data in commands:
+            category_info = commands[data]
+            message_text = (
+                f"<b>{category_info['title']}</b>\n\n"
+                f"{category_info['description']}\n\n"
+                f"<b>Commands:</b>\n"
+                + "\n".join(category_info['cmds'])
+            )
+            keyboard.append([InlineKeyboardButton("⬅️ Back to Admin Main", callback_data='admin_main_menu')])
+        elif data == 'admin_main_menu':
+            # Recreate the main admin menu
+            role = self.get_admin_role(user_id)
+            message_text = (
+                f"🔧 <b>Admin Panel</b> ({role.value.replace('_', ' ').title()})\n\n"
+                "Welcome to the Admin Control Center. Select a category to manage."
+            )
+            keyboard = [
+                [InlineKeyboardButton("📢 Broadcasting", callback_data='admin_broadcast')],
+            ]
+            if self.has_permission(user_id, Permission.APPROVE_BROADCASTS):
+                keyboard.append([InlineKeyboardButton("✅ Approval System", callback_data='admin_approvals')])
+            
+            keyboard.append([InlineKeyboardButton("📝 Templates", callback_data='admin_templates')])
+            keyboard.append([InlineKeyboardButton("👥 User Management", callback_data='admin_users')])
+            
+            if self.has_permission(user_id, Permission.MANAGE_ADMINS):
+                keyboard.append([InlineKeyboardButton("👨‍💼 Admin Management", callback_data='admin_admins')])
+            
+            if self.has_permission(user_id, Permission.VIEW_LOGS):
+                keyboard.append([InlineKeyboardButton("📊 Monitoring", callback_data='admin_monitoring')])
+            
+            keyboard.append([InlineKeyboardButton("❓ Help", callback_data='admin_help')])
+        else:
+            message_text = "Unknown admin command."
+            keyboard.append([InlineKeyboardButton("⬅️ Back to Admin Main", callback_data='admin_main_menu')])
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(message_text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
 
     async def help_command_v2(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Interactive help menu"""
