@@ -4793,62 +4793,79 @@ class BroadcastBot:
         user_id = query.from_user.id
         
         if query.data == "close_settings":
-            await query.edit_message_text("✅ Settings saved!")
+            try:
+                await query.edit_message_text("✅ Settings saved!")
+            except Exception as e:
+                logger.info(f"Settings close message already edited: {e}")
             return
 
-        toggle_type, key = query.data.split('_', 1)
+        try:
+            toggle_type, key = query.data.split('_', 1)
 
-        if toggle_type == "toggle":
-            if key == "leaderboard":
-                # Toggle privacy
-                user_doc = self.db.users_collection.find_one({'user_id': user_id}) or {}
-                new_status = not user_doc.get('leaderboard_public', True)
-                self.db.users_collection.update_one(
-                    {'user_id': user_id},
-                    {'$set': {'leaderboard_public': new_status}}
-                )
-            else: # Notification toggle
-                prefs = self.notification_manager.get_notification_preferences(user_id)
-                new_status = not prefs.get(key, True)
-                self.db.users_collection.update_one(
-                    {'user_id': user_id},
-                    {'$set': {f'notifications.{key}': new_status}}
-                )
+            if toggle_type == "toggle":
+                if key == "leaderboard":
+                    # Toggle privacy
+                    user_doc = self.db.users_collection.find_one({'user_id': user_id}) or {}
+                    new_status = not user_doc.get('leaderboard_public', True)
+                    self.db.users_collection.update_one(
+                        {'user_id': user_id},
+                        {'$set': {'leaderboard_public': new_status}}
+                    )
+                elif key.startswith("notify_"):
+                    # This is the fix: extract the actual key (e.g., 'tips')
+                    actual_key = key.split('_', 1)[1]
+                    
+                    prefs = self.notification_manager.get_notification_preferences(user_id)
+                    new_status = not prefs.get(actual_key, True)
+                    self.db.users_collection.update_one(
+                        {'user_id': user_id},
+                        {'$set': {f'notifications.{actual_key}': new_status}}
+                    )
+                else:
+                    logger.warning(f"Unknown settings toggle key: {key}")
 
-        # Re-fetch and re-draw the menu
-        prefs = self.notification_manager.get_notification_preferences(user_id)
-        user_doc = self.db.users_collection.find_one({'user_id': user_id}) or {}
-        leaderboard_public = user_doc.get('leaderboard_public', True)
-        
-        keyboard = []
-        for key, desc in [
-            ('tips', 'Daily Tips'),
-            ('leaderboards', 'Leaderboards'),
-            ('promo', 'Promotions'),
-            ('signals', 'Signal Broadcasts')
-        ]:
-            if key in prefs:
-                status = '✅ ON' if prefs[key] else '❌ OFF'
-                keyboard.append([
-                    InlineKeyboardButton(f"{desc}: {status}", callback_data=f"toggle_notify_{key}")
-                ])
+            # Re-fetch and re-draw the menu
+            prefs = self.notification_manager.get_notification_preferences(user_id)
+            user_doc = self.db.users_collection.find_one({'user_id': user_id}) or {}
+            leaderboard_public = user_doc.get('leaderboard_public', True)
+            
+            keyboard = []
+            for key_loop, desc in [
+                ('tips', 'Daily Tips'),
+                ('leaderboards', 'Leaderboards'),
+                ('promo', 'Promotions'),
+                ('signals', 'Signal Broadcasts')
+            ]:
+                if key_loop in prefs:
+                    status = '✅ ON' if prefs[key_loop] else '❌ OFF'
+                    keyboard.append([
+                        InlineKeyboardButton(f"{desc}: {status}", callback_data=f"toggle_notify_{key_loop}")
+                    ])
 
-        keyboard.append([InlineKeyboardButton(
-            f"Show in Leaderboard: {'✅ YES' if leaderboard_public else '❌ NO'}",
-            callback_data="toggle_leaderboard"
-        )])
-        keyboard.append([InlineKeyboardButton("Done", callback_data="close_settings")])
+            keyboard.append([InlineKeyboardButton(
+                f"Show in Leaderboard: {'✅ YES' if leaderboard_public else '❌ NO'}",
+                callback_data="toggle_leaderboard"
+            )])
+            keyboard.append([InlineKeyboardButton("Done", callback_data="close_settings")])
+            
+            message = (
+                "⚙️ <b>Your Settings</b>\n\n"
+                "Manage your notifications and privacy:\n"
+            )
+            
+            await query.edit_message_text(
+                message,
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
         
-        message = (
-            "⚙️ <b>Your Settings</b>\n\n"
-            "Manage your notifications and privacy:\n"
-        )
-        
-        await query.edit_message_text(
-            message,
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        except Exception as e:
+            # Catch any other errors and report them
+            logger.error(f"Error in handle_settings_callback: {e}")
+            try:
+                await query.answer("An error occurred. Please try again.", show_alert=True)
+            except:
+                pass
 
 def main():
     """Main function"""
