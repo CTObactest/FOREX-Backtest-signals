@@ -4959,7 +4959,8 @@ class BroadcastBot:
             ('tips', 'Daily Tips'),
             ('leaderboards', 'Leaderboards'),
             ('promo', 'Promotions'),
-            ('signals', 'Signal Broadcasts')
+            ('signals', 'Signal Suggestions'),
+            ('broadcasts', 'Admin Signals & Announcements')
         ]:
             if key in prefs:
                 status = '✅ ON' if prefs[key] else '❌ OFF'
@@ -5032,7 +5033,8 @@ class BroadcastBot:
                 ('tips', 'Daily Tips'),
                 ('leaderboards', 'Leaderboards'),
                 ('promo', 'Promotions'),
-                ('signals', 'Signal Broadcasts')
+                ('signals', 'Signal Suggestions'),
+                ('broadcasts', 'Admin Signals & Announcements')
             ]:
                 if key_loop in prefs:
                     status = '✅ ON' if prefs[key_loop] else '❌ OFF'
