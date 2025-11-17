@@ -1335,7 +1335,7 @@ class BroadcastBot:
         user_id = user.id
         
         # --- NEW: Track Engagement ---
-        self.engagement_tracker.update_engagement(user_id, 'command_used')
+        # self.engagement_tracker.update_engagement(user_id, 'command_used') # <--- REMOVED/COMMENTED OUT THIS LINE
         # -----------------------------
 
         if not await self.is_user_subscribed(user_id, context):
@@ -1398,7 +1398,6 @@ class BroadcastBot:
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return WAITING_SIGNAL_MESSAGE
-
     async def show_signal_example(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show example of good signal"""
         query = update.callback_query
