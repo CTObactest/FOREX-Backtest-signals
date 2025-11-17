@@ -1328,9 +1328,16 @@ class BroadcastBot:
         else:
             await update.message.reply_text(message)
 
+
     async def suggest_signal_start_v2(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Enhanced signal suggestion with quality template"""
-        user_id = update.effective_user.id
+        user = update.effective_user
+        user_id = user.id
+        
+        # --- NEW: Track Engagement ---
+        self.engagement_tracker.update_engagement(user_id, 'command_used')
+        # -----------------------------
+
         if not await self.is_user_subscribed(user_id, context):
             await self.send_join_channel_message(user_id, context)
             return ConversationHandler.END
@@ -1382,6 +1389,7 @@ class BroadcastBot:
             "Send /cancel to cancel"
         )
     
+        # The callback_data="show_signal_example" is correct and is handled by the fix in ConversationHandler
         keyboard = [[InlineKeyboardButton("📋 View Example", callback_data="show_signal_example")]]
     
         await update.message.reply_text(
@@ -2767,6 +2775,7 @@ class BroadcastBot:
             entry_points=[CommandHandler("suggestsignal", self.suggest_signal_start_v2)],
             states={
                 WAITING_SIGNAL_MESSAGE: [
+                    CallbackQueryHandler(self.show_signal_example, pattern="^show_signal_example$"),
                     MessageHandler(filters.ALL & ~filters.COMMAND, self.receive_signal_suggestion)
                 ]
             },
