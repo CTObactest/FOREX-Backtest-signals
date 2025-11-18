@@ -1744,20 +1744,42 @@ class BroadcastBot:
         return role in [AdminRole.BROADCASTER, AdminRole.ADMIN]
 
     def get_user_suggestion_limit(self, user_id: int) -> (int, str):
-        """Determines a user's suggestion limit and level based on their avg rating"""
+        """Determines a user's suggestion limit and level based on rating AND achievements"""
+        
+        # 1. Calculate Base Limit based on Rating
         avg_rating = self.db.get_user_average_rating(user_id)
 
         if avg_rating >= 4:
-            limit = 5
+            base_limit = 5
             level = "Premium (4-5 Star)"
         elif avg_rating >= 3:
-            limit = 2
+            base_limit = 2
             level = "Standard (3 Star)"
         else: # < 3 or 0
-            limit = 1
+            base_limit = 1
             level = "Basic (0-2 Star)"
+        bonus = 0
+        user = self.db.users_collection.find_one({'user_id': user_id})
+        
+        if user and 'achievements' in user:
+            achievements = user['achievements']
+            if 'approved_signal' in achievements:
+                bonus += 1
+            if 'consistent' in achievements:
+                bonus += 1
+            if 'elite' in achievements:
+                base_limit = 100
+                level = "💎 Elite Trader"
+        if user and 'referrals' in user:
+            refs = user['referrals']
+            if refs >= 5:
+                bonus += 2
 
-        return limit, level
+        total_limit = base_limit + bonus
+        if bonus > 0 and base_limit < 50:
+            level += f" (+{bonus} Bonus)"
+
+        return total_limit, level
 
     async def start_v2(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Polished welcome with clear value prop & referral handling"""
