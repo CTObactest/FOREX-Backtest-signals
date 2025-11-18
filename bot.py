@@ -2213,6 +2213,16 @@ class BroadcastBot:
                 keyboard.append([InlineKeyboardButton("✅ Approval System", callback_data='admin_approvals')])
             
             keyboard.append([InlineKeyboardButton("📝 Templates", callback_data='admin_templates')])
+            
+            # --- NEW: Team Duties & QA ---
+            if self.is_admin(user_id):
+                keyboard.append([InlineKeyboardButton("📋 Team Duties & QA", callback_data='admin_duties')])
+                
+            # --- NEW: Content & Education Management ---
+            # Restricted to Super Admins (or role with permission to sync)
+            if user_id in self.super_admin_ids: 
+                 keyboard.append([InlineKeyboardButton("📚 Content & Education", callback_data='admin_content')])
+            
             keyboard.append([InlineKeyboardButton("👥 User Management", callback_data='admin_users')])
             
             if self.has_permission(user_id, Permission.MANAGE_ADMINS):
@@ -2221,7 +2231,7 @@ class BroadcastBot:
             if self.has_permission(user_id, Permission.VIEW_LOGS):
                 keyboard.append([InlineKeyboardButton("📊 Monitoring", callback_data='admin_monitoring')])
             
-            keyboard.append([InlineKeyboardButton("❓ Help", callback_data='admin_help')]) # General help for admin
+            keyboard.append([InlineKeyboardButton("❓ Help", callback_data='admin_help')])
 
             reply_markup = InlineKeyboardMarkup(keyboard)
             
@@ -2271,10 +2281,9 @@ class BroadcastBot:
 
     async def admin_button_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
-        await query.answer() # Acknowledge the button press
+        await query.answer()
         user_id = query.from_user.id
         
-        # Ensure only admins can use these buttons
         if not self.is_admin(user_id):
             await query.edit_message_text("You are not authorized to use these commands.")
             return
@@ -2282,17 +2291,15 @@ class BroadcastBot:
         data = query.data
         message_text = ""
         keyboard = []
-
-        # Define commands for each category
         commands = {
             'admin_broadcast': {
                 'title': "📢 Broadcasting Commands",
-                'description': "Manage sending messages to your subscribers.",
+                'description': "Manage sending messages and choosing optimal times.",
                 'cmds': [
                     "/broadcast - Start broadcasting",
                     "/schedule - Schedule a broadcast",
                     "/scheduled - View scheduled broadcasts",
-                    "/bestschedule - View optimal broadcast times",
+                    "/bestschedule - View optimal broadcast times", // MOVED HERE
                 ]
             },
             'admin_approvals': {
@@ -2301,6 +2308,23 @@ class BroadcastBot:
                 'cmds': [
                     "/approvals - View pending approvals",
                     "/signals - View signal suggestions",
+                ]
+            },
+            'admin_duties': {
+                'title': "📋 Team Duties & QA",
+                'description': "Manage daily admin tasks and monitor team performance.",
+                'cmds': [
+                    "/myduty - View your assigned task",
+                    "/dutycomplete - Mark your task as complete",
+                    "/dutystats - View team completion stats (Super Admins only)",
+                ]
+            },
+            'admin_content': {
+                'title': "📚 Content & Education Management",
+                'description': "Manage the educational content database.",
+                'cmds': [
+                    "/synceducation - Manually sync content from channel (Super Admin only)",
+                    "/previeweducation - Preview a random piece of content",
                 ]
             },
             'admin_templates': {
@@ -2315,7 +2339,7 @@ class BroadcastBot:
                 'title': "👥 User Management Commands",
                 'description': "Manage your bot's subscribers.",
                 'cmds': [
-                    "/add &lt;user_id&gt; - Add subscriber",  # <-- This line is fixed
+                    "/add &lt;user_id&gt; - Add subscriber",
                     "/stats - View statistics",
                     "/subscribers - List subscribers",
                 ]
@@ -2331,10 +2355,11 @@ class BroadcastBot:
             },
             'admin_monitoring': {
                 'title': "📊 Monitoring & Analytics",
-                'description': "Access logs and performance metrics.",
+                'description': "Access logs and detailed performance metrics.",
                 'cmds': [
-                    "/logs - View activity logs",
-                    "/mystats - Your statistics",
+                    "/logs - View activity logs (Super Admin only)",
+                    "/mystats - Your individual performance statistics",
+                    // /bestschedule REMOVED from here
                 ]
             },
             'admin_help': {
