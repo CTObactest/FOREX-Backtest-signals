@@ -27,6 +27,8 @@ import re
 import pytesseract
 import finnhub
 from telegram.constants import ParseMode
+import random
+from typing import List, Dict, Optional
 
 # Enable logging
 logging.basicConfig(
