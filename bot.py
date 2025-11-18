@@ -4953,68 +4953,126 @@ class BroadcastBot:
                 "❌ Invalid numbers. Use format: /pips EURUSD 1.0850 1.0900"
             )
 
+    def get_estimated_pip_value(self, pair: str) -> (float, str):
+        """
+        Returns (pip_value_per_lot, description)
+        Estimates pip value for 1.0 standard lot in USD.
+        """
+        pair = pair.upper().strip()
+        
+        # --- Deriv / Synthetics (Standard 1.0 lot = $1 per point usually) ---
+        # Note: Deriv specs vary, but 1 lot usually equals 1 unit of the index
+        if any(x in pair for x in ['VOLATILITY', 'BOOM', 'CRASH', 'STEP', 'JUMP', 'V75', 'V100', 'V25']):
+            # Most Deriv volatility indices: 1 Lot = $1 per 1.0 point move
+            return 1.0, "Deriv (assuming $1/point)"
+            
+        # --- Commodities / Metals ---
+        if 'XAU' in pair or 'GOLD' in pair:
+            # Standard: 100oz contract. 1 pip (0.01) = $10 USD
+            return 10.0, "Gold Standard ($10/pip)"
+        if 'XAG' in pair or 'SILVER' in pair:
+            # Standard: 5000oz contract. 1 pip (0.01) = $50 USD
+            return 50.0, "Silver Standard ($50/pip)"
+        if 'BTC' in pair:
+            # Standard: 1 coin. 1 pip (0.01) = $0.01? No, usually $1 move = $1 USD
+            return 1.0, "Crypto ($1/1.0 move)"
+        if 'US30' in pair or 'DJ30' in pair:
+             # Standard: 1 Lot = $1 per point (variable by broker, often $5 or $1)
+             return 1.0, "Index (assuming $1/point)"
+
+        # --- Forex Majors (USD is Counter) ---
+        # EURUSD, GBPUSD, AUDUSD, NZDUSD
+        if pair.endswith('USD'):
+            return 10.0, "Standard ($10/pip)"
+            
+        # --- Forex Crosses (Approximations based on current rates) ---
+        # Accuracy Note: Without a live price feed, we use static averages.
+        if 'JPY' in pair:
+            # 1000 units / USDJPY rate (approx 150) = $6.66
+            return 6.66, "JPY Pair (~$6.66/pip)"
+        if 'CAD' in pair:
+            # 10 USD / USDCAD rate (approx 1.35) = $7.40
+            return 7.40, "CAD Pair (~$7.40/pip)"
+        if 'CHF' in pair:
+            # 10 USD / USDCHF rate (approx 0.88) = $11.36
+            return 11.30, "CHF Pair (~$11.30/pip)"
+        if 'GBP' in pair: # EURGBP
+            # 10 * GBPUSD rate (approx 1.27) = $12.70
+            return 12.70, "GBP Cross (~$12.70/pip)"
+        if 'EUR' in pair: # EURAUD etc
+             # 10 * EURUSD rate (approx 1.08) = $10.80
+            return 10.80, "EUR Cross (~$10.80/pip)"
+            
+        # Fallback
+        return 10.0, "Standard (Approx)"
+
     async def position_size_calculator(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Calculate position size based on risk."""
-        
+        """
+        Professional Position Size Calculator
+        Usage: /positionsize [PAIR] [RISK_USD] [SL_PIPS]
+        """
         self.engagement_tracker.update_engagement(update.effective_user.id, 'command_used')
-        
+
+        # Check subscription
         if not await self.is_user_subscribed(update.effective_user.id, context):
             await self.send_join_channel_message(update.effective_user.id, context)
             return
-        
+
         if len(context.args) != 3:
-            example = (
-                "📏 <b>Position Size Calculator</b>\n\n"
-                
-                "<b>Usage:</b>\n"
-                "<code>/positionsize [ACCOUNT_BALANCE] [RISK_PERCENT] [SL_PIPS]</code>\n\n"
-                
-                "<b>Example:</b>\n"
-                "<code>/positionsize 10000 1 30</code>\n"
-                "(Calculates lot size for a $10,000 account, risking 1% with a 30-pip stop loss)\n\n"
-                
-                "💡 Assumes a standard pip value of $10 per 1.0 lot for XXX/USD pairs."
+            # Show the help message matching your screenshot style
+            example_text = (
+                "Usage: /positionsize [pair] [risk_usd] [stop_loss_pips]\n"
+                "Example: <code>/positionsize EURUSD 100 20</code>\n\n"
+                "<i>Supports Forex, Gold, and Deriv (V75, Boom, Crash)</i>"
             )
-            await update.message.reply_text(example, parse_mode=ParseMode.HTML)
+            await update.message.reply_text(example_text, parse_mode=ParseMode.HTML)
             return
 
         try:
-            account_balance = float(context.args[0])
-            risk_percent = float(context.args[1])
+            # 1. Parse Arguments
+            pair = context.args[0].upper()
+            risk_usd = float(context.args[1])
             sl_pips = float(context.args[2])
             
-            if account_balance <= 0 or risk_percent <= 0 or sl_pips <= 0:
-                await update.message.reply_text("❌ All values must be positive numbers.")
+            if risk_usd <= 0 or sl_pips <= 0:
+                await update.message.reply_text("❌ Risk and SL must be positive numbers.")
                 return
 
-            # --- Calculation ---
-            # 1. Amount to risk
-            risk_amount_usd = account_balance * (risk_percent / 100)
+            # 2. Get Pip Value Logic
+            pip_value_per_lot, description = self.get_estimated_pip_value(pair)
             
-            # 2. Value per pip
-            value_per_pip = risk_amount_usd / sl_pips
-            
-            # 3. Lot size (assuming $10 per pip for a 1.0 lot)
-            pip_value_per_lot = 10.0
-            lot_size = value_per_pip / pip_value_per_lot
-            
-            # --- Result ---
-            result = (
-                f"✅ <b>Position Size Calculation</b>\n\n"
-                f"<b>Account Balance:</b> ${account_balance:,.2f}\n"
-                f"<b>Risk Percent:</b> {risk_percent}%\n"
-                f"<b>Stop Loss:</b> {sl_pips} pips\n\n"
-                
-                f"<b>Amount to Risk:</b> ${risk_amount_usd:,.2f}\n"
-                f"<b>Required Lot Size:</b> <code>{lot_size:.2f}</code>"
+            # 3. Calculate Lot Size
+            # Formula: Risk / (StopLoss * PipValue)
+            if pip_value_per_lot > 0:
+                raw_lots = risk_usd / (sl_pips * pip_value_per_lot)
+            else:
+                raw_lots = 0
+
+            # 4. Rounding Logic (Standard vs Micro)
+            # Most brokers min lot is 0.01, some Deriv indices are 0.001
+            if "V75" in pair or "VOLATILITY" in pair:
+                recommended_lots = round(raw_lots, 3) # 3 decimal places for indices
+                if recommended_lots < 0.001: recommended_lots = 0.001
+            else:
+                recommended_lots = round(raw_lots, 2) # 2 decimal places for forex
+                if recommended_lots < 0.01: recommended_lots = 0.01
+
+            # 5. Format Output (Matching your screenshot)
+            message = (
+                "📐 <b>Position Size Calculator</b>\n\n"
+                f"Risk: ${risk_usd:,.2f}\n"
+                f"Stop Loss: {sl_pips} pips/points\n"
+                f"Pair: {pair} <small>({description})</small>\n\n"
+                f"Recommended Lot Size: <b>{recommended_lots} lots</b>"
             )
-            
-            await update.message.reply_text(result, parse_mode=ParseMode.HTML)
-            
+
+            await update.message.reply_text(message, parse_mode=ParseMode.HTML)
+
         except ValueError:
-            await update.message.reply_text(
-                "❌ Invalid numbers. Use format: /positionsize 10000 1 30"
-            )
+            await update.message.reply_text("❌ Invalid format. Please use numbers for Risk and SL.")
+        except Exception as e:
+            logger.error(f"Error in position size: {e}")
+            await update.message.reply_text("❌ Calculation error.")
 
     async def send_daily_tip(self, context: ContextTypes.DEFAULT_TYPE):
         """Optional daily trading tip - users can opt out"""
