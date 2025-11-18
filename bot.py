@@ -3922,7 +3922,7 @@ class BroadcastBot:
 
         # Signal suggestions
         application.add_handler(signal_handler)
-        application.add_handler(CallbackQueryHandler(self.handle_force_submit, pattern="^(force_submit_text|cancel_signal)$"))
+        application.add_handler(CallbackQueryHandler(self.handle_force_submit, pattern="^(force_submit_text|force_submit_photo|cancel_signal)$"))
 
         # Subscription and VIP request handling
         application.add_handler(subscribe_handler)
