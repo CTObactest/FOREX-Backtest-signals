@@ -1600,7 +1600,279 @@ class EducationalContentManager:
         except Exception as e:
             logger.error(f"Error fetching educational content: {e}")
             return 0
+
+class AdminDutyManager:
+    """Manages daily task assignments for admins"""
+    
+    # Define duty categories with specific tasks
+    DUTY_CATEGORIES = {
+        'signal_review': {
+            'name': '💡 Signal Review Duty',
+            'emoji': '💡',
+            'tasks': [
+                'Review all pending signal suggestions',
+                'Provide detailed feedback on rejected signals',
+                'Rate approved signals accurately (1-5 stars)',
+                'Respond to user questions about signals'
+            ],
+            'target': 'Review at least 5 signals',
+            'priority': 'high'
+        },
+        'broadcast_approval': {
+            'name': '📢 Broadcast Approval Duty',
+            'emoji': '📢',
+            'tasks': [
+                'Review pending broadcast approvals',
+                'Check broadcast quality and content',
+                'Approve/reject within 2 hours',
+                'Provide clear rejection reasons if declining'
+            ],
+            'target': 'Process all pending approvals',
+            'priority': 'high'
+        },
+        'user_engagement': {
+            'name': '👥 User Engagement Duty',
+            'emoji': '👥',
+            'tasks': [
+                'Respond to user queries in the group',
+                'Welcome new subscribers personally',
+                'Check for inactive users and re-engage them',
+                'Share a motivational message in VIP group'
+            ],
+            'target': 'Engage with at least 10 users',
+            'priority': 'medium'
+        },
+        'content_creation': {
+            'name': '📝 Content Creation Duty',
+            'emoji': '📝',
+            'tasks': [
+                'Create 1 educational post for the channel',
+                'Share a trading tip or analysis',
+                'Upload new content to education database',
+                'Review and update bot templates'
+            ],
+            'target': 'Create 1 quality content piece',
+            'priority': 'medium'
+        },
+        'quality_control': {
+            'name': '🔍 Quality Control Duty',
+            'emoji': '🔍',
+            'tasks': [
+                'Review broadcast quality from past 7 days',
+                'Check for spam or low-quality content',
+                'Verify VIP subscription requests',
+                'Monitor admin activity logs'
+            ],
+            'target': 'Complete quality audit',
+            'priority': 'low'
+        },
+        'analytics_reporting': {
+            'name': '📊 Analytics & Reporting Duty',
+            'emoji': '📊',
+            'tasks': [
+                'Review bot statistics and user growth',
+                'Check signal performance metrics',
+                'Identify trends in user engagement',
+                'Prepare summary report for the team'
+            ],
+            'target': 'Generate daily report',
+            'priority': 'low'
+        },
+        'community_moderation': {
+            'name': '🛡️ Community Moderation Duty',
+            'emoji': '🛡️',
+            'tasks': [
+                'Monitor VIP group for violations',
+                'Handle user complaints and issues',
+                'Check for spam or inappropriate content',
+                'Update community guidelines if needed'
+            ],
+            'target': 'Maintain community standards',
+            'priority': 'medium'
+        }
+    }
+    
+    def __init__(self, db):
+        self.db = db
+        self.admin_duties_collection = self.db['admin_duties']
+        
+        # Create indexes
+        self.admin_duties_collection.create_index([('date', -1)])
+        self.admin_duties_collection.create_index('admin_id')
+    
+    def get_date_key(self) -> str:
+        """Get today's date as a key"""
+        return datetime.now(timezone.utc).strftime('%Y-%m-%d')
+    
+    def assign_daily_duties(self, admin_list: List[Dict]) -> Dict[int, Dict]:
+        """
+        Assign duties to admins for the day using intelligent rotation.
+        Returns dict of {admin_id: duty_info}
+        """
+        date_key = self.get_date_key()
+        
+        # Filter active admins (not broadcasters)
+        eligible_admins = [
+            admin for admin in admin_list 
+            if admin['role'] in ['super_admin', 'admin', 'moderator']
+        ]
+        
+        if not eligible_admins:
+            logger.warning("No eligible admins for duty assignment")
+            return {}
+        
+        # Get previous assignments to ensure rotation
+        yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime('%Y-%m-%d')
+        yesterday_duties = list(self.admin_duties_collection.find({'date': yesterday}))
+        
+        # Create dict of {admin_id: yesterday_duty_category}
+        last_assignments = {
+            duty['admin_id']: duty['duty_category'] 
+            for duty in yesterday_duties
+        }
+        
+        # Get all duty categories
+        duty_categories = list(self.DUTY_CATEGORIES.keys())
+        
+        # Shuffle for randomness
+        random.shuffle(eligible_admins)
+        random.shuffle(duty_categories)
+        
+        assignments = {}
+        used_categories = set()
+        
+        # Assign duties ensuring:
+        # 1. No admin gets same duty as yesterday
+        # 2. High priority duties are covered
+        # 3. Fair distribution
+        
+        # First pass: Assign high priority duties
+        high_priority = [cat for cat, info in self.DUTY_CATEGORIES.items() if info['priority'] == 'high']
+        
+        for i, admin in enumerate(eligible_admins[:len(high_priority)]):
+            admin_id = admin['user_id']
+            last_duty = last_assignments.get(admin_id)
             
+            # Find a high priority duty they didn't have yesterday
+            assigned = False
+            for category in high_priority:
+                if category != last_duty and category not in used_categories:
+                    assignments[admin_id] = {
+                        'duty_category': category,
+                        'duty_info': self.DUTY_CATEGORIES[category],
+                        'admin_name': admin.get('name', str(admin_id)),
+                        'admin_role': admin['role']
+                    }
+                    used_categories.add(category)
+                    assigned = True
+                    break
+            
+            # If all high priority were yesterday's, assign any high priority
+            if not assigned:
+                for category in high_priority:
+                    if category not in used_categories:
+                        assignments[admin_id] = {
+                            'duty_category': category,
+                            'duty_info': self.DUTY_CATEGORIES[category],
+                            'admin_name': admin.get('name', str(admin_id)),
+                            'admin_role': admin['role']
+                        }
+                        used_categories.add(category)
+                        break
+        
+        # Second pass: Assign remaining duties to remaining admins
+        remaining_admins = [a for a in eligible_admins if a['user_id'] not in assignments]
+        remaining_duties = [cat for cat in duty_categories if cat not in used_categories]
+        
+        for i, admin in enumerate(remaining_admins):
+            if i >= len(remaining_duties):
+                break  # More admins than duties
+            
+            admin_id = admin['user_id']
+            category = remaining_duties[i]
+            
+            assignments[admin_id] = {
+                'duty_category': category,
+                'duty_info': self.DUTY_CATEGORIES[category],
+                'admin_name': admin.get('name', str(admin_id)),
+                'admin_role': admin['role']
+            }
+        
+        # Store assignments in database
+        for admin_id, duty_data in assignments.items():
+            self.admin_duties_collection.insert_one({
+                'date': date_key,
+                'admin_id': admin_id,
+                'admin_name': duty_data['admin_name'],
+                'admin_role': duty_data['admin_role'],
+                'duty_category': duty_data['duty_category'],
+                'duty_info': duty_data['duty_info'],
+                'assigned_at': time.time(),
+                'completed': False,
+                'completion_notes': None
+            })
+        
+        logger.info(f"Assigned {len(assignments)} duties for {date_key}")
+        return assignments
+    
+    def mark_duty_complete(self, admin_id: int, notes: str = None) -> bool:
+        """Mark today's duty as complete"""
+        date_key = self.get_date_key()
+        
+        result = self.admin_duties_collection.update_one(
+            {'date': date_key, 'admin_id': admin_id},
+            {
+                '$set': {
+                    'completed': True,
+                    'completed_at': time.time(),
+                    'completion_notes': notes
+                }
+            }
+        )
+        
+        return result.modified_count > 0
+    
+    def get_today_duty(self, admin_id: int) -> Optional[Dict]:
+        """Get admin's duty for today"""
+        date_key = self.get_date_key()
+        return self.admin_duties_collection.find_one({'date': date_key, 'admin_id': admin_id})
+    
+    def get_completion_stats(self, days: int = 7) -> Dict:
+        """Get duty completion statistics"""
+        start_date = (datetime.now(timezone.utc) - timedelta(days=days)).strftime('%Y-%m-%d')
+        
+        pipeline = [
+            {'$match': {'date': {'$gte': start_date}}},
+            {
+                '$group': {
+                    '_id': '$admin_id',
+                    'admin_name': {'$first': '$admin_name'},
+                    'total_duties': {'$sum': 1},
+                    'completed_duties': {
+                        '$sum': {'$cond': [{'$eq': ['$completed', True]}, 1, 0]}
+                    }
+                }
+            },
+            {
+                '$project': {
+                    'admin_id': '$_id',
+                    'admin_name': 1,
+                    'total_duties': 1,
+                    'completed_duties': 1,
+                    'completion_rate': {
+                        '$multiply': [
+                            {'$divide': ['$completed_duties', '$total_duties']},
+                            100
+                        ]
+                    }
+                }
+            },
+            {'$sort': {'completion_rate': -1}}
+        ]
+        
+        results = list(self.admin_duties_collection.aggregate(pipeline))
+        return results
+
 class BroadcastBot:
     def __init__(self, token: str, super_admin_ids: List[int], mongo_handler: MongoDBHandler):
         self.token = token
@@ -1634,6 +1906,9 @@ class BroadcastBot:
         else:
             self.edu_content_manager = None
             logger.warning("EDUCATION_CHANNEL_ID not set. Educational content feature disabled.")
+        # Initialize Admin Duty Manager
+        self.admin_duty_manager = AdminDutyManager(self.db.db)
+        logger.info("Admin Duty Manager initialized")
         
         self.cr_numbers = {
             "CR5499637", "CR5500382", "CR5529877", "CR5535613", "CR5544922", "CR5551288",
@@ -3818,6 +4093,275 @@ class BroadcastBot:
                 logger.info(f"Auto-synced {count} educational content items")
             except Exception as e:
                 logger.error(f"Error in auto-sync education job: {e}")
+
+    async def assign_daily_duties_job(self, context: ContextTypes.DEFAULT_TYPE):
+        """Job to assign daily duties at midnight UTC"""
+        try:
+            # Get all admins
+            admins = self.db.get_all_admins()
+            
+            if not admins:
+                logger.warning("No admins found for duty assignment")
+                return
+            
+            # Assign duties
+            assignments = self.admin_duty_manager.assign_daily_duties(admins)
+            
+            if not assignments:
+                logger.warning("No duty assignments created")
+                return
+            
+            # Send duty notifications to each admin
+            for admin_id, duty_data in assignments.items():
+                await self.send_duty_notification(context, admin_id, duty_data)
+            
+            # Send summary to super admins
+            await self.send_duty_summary_to_super_admins(context, assignments)
+            
+            logger.info(f"Daily duties assigned and notifications sent to {len(assignments)} admins")
+            
+        except Exception as e:
+            logger.error(f"Error in assign_daily_duties_job: {e}")
+    
+    async def send_duty_notification(self, context: ContextTypes.DEFAULT_TYPE, 
+                                     admin_id: int, duty_data: Dict):
+        """Send duty assignment notification to admin"""
+        duty_info = duty_data['duty_info']
+        
+        # Format task list
+        tasks_text = "\n".join([f"  • {task}" for task in duty_info['tasks']])
+        
+        # Determine priority emoji
+        priority_emoji = {
+            'high': '🔴',
+            'medium': '🟡',
+            'low': '🟢'
+        }[duty_info['priority']]
+        
+        message = (
+            f"{duty_info['emoji']} <b>Your Duty for Today</b>\n"
+            f"{priority_emoji} Priority: {duty_info['priority'].upper()}\n\n"
+            
+            f"<b>{duty_info['name']}</b>\n\n"
+            
+            f"<b>Tasks:</b>\n{tasks_text}\n\n"
+            
+            f"<b>Target:</b> {duty_info['target']}\n\n"
+            
+            f"📝 When done, use: /dutycomplete [notes]\n"
+            f"📋 View your duty: /myduty\n\n"
+            
+            f"<i>Let's keep the team productive! 💪</i>"
+        )
+        
+        try:
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text=message,
+                parse_mode=ParseMode.HTML
+            )
+        except Exception as e:
+            logger.error(f"Failed to send duty notification to {admin_id}: {e}")
+    
+    async def send_duty_summary_to_super_admins(self, context: ContextTypes.DEFAULT_TYPE, 
+                                                assignments: Dict):
+        """Send duty summary to super admins"""
+        summary = (
+            "📋 <b>Daily Duty Assignments Summary</b>\n"
+            f"Date: {datetime.now(timezone.utc).strftime('%Y-%m-%d')}\n\n"
+        )
+        
+        for admin_id, duty_data in assignments.items():
+            summary += (
+                f"• <b>{duty_data['admin_name']}</b> ({duty_data['admin_role']})\n"
+                f"  → {duty_data['duty_info']['emoji']} {duty_data['duty_category'].replace('_', ' ').title()}\n"
+            )
+        
+        summary += "\n<i>Use /dutystats to view completion rates</i>"
+        
+        for super_admin_id in self.super_admin_ids:
+            try:
+                await context.bot.send_message(
+                    chat_id=super_admin_id,
+                    text=summary,
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception as e:
+                logger.error(f"Failed to send duty summary to super admin {super_admin_id}: {e}")
+    
+    async def my_duty_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show admin's duty for today"""
+        user_id = update.effective_user.id
+        
+        if not self.is_admin(user_id):
+            await update.message.reply_text("❌ This command is for admins only.")
+            return
+        
+        duty = self.admin_duty_manager.get_today_duty(user_id)
+        
+        if not duty:
+            await update.message.reply_text(
+                "📋 You don't have an assigned duty for today.\n\n"
+                "<i>Duties are assigned daily at midnight UTC.</i>",
+                parse_mode=ParseMode.HTML
+            )
+            return
+        
+        duty_info = duty['duty_info']
+        tasks_text = "\n".join([f"  • {task}" for task in duty_info['tasks']])
+        
+        status = "✅ COMPLETED" if duty.get('completed') else "⏳ PENDING"
+        
+        message = (
+            f"{duty_info['emoji']} <b>Your Duty for Today</b>\n"
+            f"Status: {status}\n\n"
+            
+            f"<b>{duty_info['name']}</b>\n\n"
+            
+            f"<b>Tasks:</b>\n{tasks_text}\n\n"
+            
+            f"<b>Target:</b> {duty_info['target']}\n\n"
+        )
+        
+        if duty.get('completed'):
+            completed_at = datetime.fromtimestamp(duty['completed_at']).strftime('%H:%M UTC')
+            message += f"Completed at: {completed_at}\n"
+            if duty.get('completion_notes'):
+                message += f"Notes: {duty['completion_notes']}\n"
+        else:
+            message += f"📝 Mark complete: /dutycomplete [notes]"
+        
+        await update.message.reply_text(message, parse_mode=ParseMode.HTML)
+    
+    async def duty_complete_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Mark duty as complete"""
+        user_id = update.effective_user.id
+        
+        if not self.is_admin(user_id):
+            await update.message.reply_text("❌ This command is for admins only.")
+            return
+        
+        # Get notes from command args
+        notes = ' '.join(context.args) if context.args else None
+        
+        duty = self.admin_duty_manager.get_today_duty(user_id)
+        
+        if not duty:
+            await update.message.reply_text("❌ You don't have a duty assigned for today.")
+            return
+        
+        if duty.get('completed'):
+            await update.message.reply_text("✅ You've already marked your duty as complete today!")
+            return
+        
+        # Mark as complete
+        success = self.admin_duty_manager.mark_duty_complete(user_id, notes)
+        
+        if success:
+            self.engagement_tracker.update_engagement(user_id, 'duty_completed')
+            
+            message = (
+                "✅ <b>Duty Marked Complete!</b>\n\n"
+                f"Great work! Your {duty['duty_info']['name']} is done.\n\n"
+            )
+            
+            if notes:
+                message += f"<b>Your notes:</b> {notes}\n\n"
+            
+            message += "<i>Keep up the excellent teamwork! 🎉</i>"
+            
+            await update.message.reply_text(message, parse_mode=ParseMode.HTML)
+            
+            # Notify super admins
+            for super_admin_id in self.super_admin_ids:
+                if super_admin_id != user_id:
+                    try:
+                        await context.bot.send_message(
+                            chat_id=super_admin_id,
+                            text=(
+                                f"✅ <b>{duty['admin_name']}</b> completed their duty:\n"
+                                f"{duty['duty_info']['emoji']} {duty['duty_info']['name']}\n"
+                                + (f"\nNotes: {notes}" if notes else "")
+                            ),
+                            parse_mode=ParseMode.HTML
+                        )
+                    except:
+                        pass
+        else:
+            await update.message.reply_text("❌ Failed to mark duty as complete. Please try again.")
+    
+    async def duty_stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show duty completion statistics"""
+        user_id = update.effective_user.id
+        
+        if user_id not in self.super_admin_ids:
+            await update.message.reply_text("❌ Only Super Admins can view duty statistics.")
+            return
+        
+        # Get stats for past 7 days
+        stats = self.admin_duty_manager.get_completion_stats(days=7)
+        
+        if not stats:
+            await update.message.reply_text("📊 No duty completion data available yet.")
+            return
+        
+        message = (
+            "📊 <b>Duty Completion Stats (Last 7 Days)</b>\n\n"
+        )
+        
+        for stat in stats:
+            completion_rate = stat['completion_rate']
+            
+            # Status emoji based on completion rate
+            if completion_rate >= 80:
+                status = "🟢"
+            elif completion_rate >= 50:
+                status = "🟡"
+            else:
+                status = "🔴"
+            
+            message += (
+                f"{status} <b>{stat['admin_name']}</b>\n"
+                f"   {stat['completed_duties']}/{stat['total_duties']} duties "
+                f"({completion_rate:.1f}%)\n\n"
+            )
+        
+        message += "<i>Use /myduty to check your current duty</i>"
+        
+        await update.message.reply_text(message, parse_mode=ParseMode.HTML)
+
+    async def send_duty_reminders_job(self, context: ContextTypes.DEFAULT_TYPE):
+        """Send reminders to admins with incomplete duties"""
+        date_key = self.admin_duty_manager.get_date_key()
+        
+        # Find incomplete duties for today
+        incomplete_duties = self.admin_duty_manager.admin_duties_collection.find({
+            'date': date_key,
+            'completed': False
+        })
+        
+        for duty in incomplete_duties:
+            admin_id = duty['admin_id']
+            duty_info = duty['duty_info']
+            
+            message = (
+                f"⏰ <b>Duty Reminder</b>\n\n"
+                f"You have an incomplete duty:\n"
+                f"{duty_info['emoji']} {duty_info['name']}\n\n"
+                f"<b>Target:</b> {duty_info['target']}\n\n"
+                f"Please complete it before end of day.\n"
+                f"Mark done: /dutycomplete [notes]"
+            )
+            
+            try:
+                await context.bot.send_message(
+                    chat_id=admin_id,
+                    text=message,
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception as e:
+                logger.error(f"Failed to send duty reminder to {admin_id}: {e}")
+
   
     def create_health_server(self, port: int):
         """Create health check server"""
