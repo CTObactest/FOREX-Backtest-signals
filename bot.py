@@ -5019,7 +5019,6 @@ class BroadcastBot:
             return
 
         if len(context.args) != 3:
-            # Show the help message matching your screenshot style
             example_text = (
                 "Usage: /positionsize [pair] [risk_usd] [stop_loss_pips]\n"
                 "Example: <code>/positionsize EURUSD 100 20</code>\n\n"
@@ -5048,21 +5047,20 @@ class BroadcastBot:
             else:
                 raw_lots = 0
 
-            # 4. Rounding Logic (Standard vs Micro)
-            # Most brokers min lot is 0.01, some Deriv indices are 0.001
+            # 4. Rounding Logic
             if "V75" in pair or "VOLATILITY" in pair:
-                recommended_lots = round(raw_lots, 3) # 3 decimal places for indices
+                recommended_lots = round(raw_lots, 3) 
                 if recommended_lots < 0.001: recommended_lots = 0.001
             else:
-                recommended_lots = round(raw_lots, 2) # 2 decimal places for forex
+                recommended_lots = round(raw_lots, 2)
                 if recommended_lots < 0.01: recommended_lots = 0.01
 
-            # 5. Format Output (Matching your screenshot)
+            # 5. Format Output (FIXED: Changed <small> to <i>)
             message = (
                 "📐 <b>Position Size Calculator</b>\n\n"
                 f"Risk: ${risk_usd:,.2f}\n"
                 f"Stop Loss: {sl_pips} pips/points\n"
-                f"Pair: {pair} <small>({description})</small>\n\n"
+                f"Pair: {pair} <i>({description})</i>\n\n"
                 f"Recommended Lot Size: <b>{recommended_lots} lots</b>"
             )
 
