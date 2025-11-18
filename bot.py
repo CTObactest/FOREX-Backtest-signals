@@ -3740,6 +3740,85 @@ class BroadcastBot:
 
         return next_dt.timestamp()
 
+    async def sync_educational_content(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Admin command to sync educational content from channel"""
+        user_id = update.effective_user.id
+        
+        if user_id not in self.super_admin_ids:
+            await update.message.reply_text("❌ Only Super Admins can use this command.")
+            return
+        
+        if not self.edu_content_manager:
+            await update.message.reply_text("❌ Educational content feature is not configured.")
+            return
+        
+        await update.message.reply_text("🔄 Syncing educational content from channel...")
+        
+        try:
+            # Note: This requires bot to see messages. 
+            # Standard Bot API limitations apply regarding fetching history.
+            count = await self.edu_content_manager.fetch_and_store_content(context, limit=200)
+            await update.message.reply_text(
+                f"✅ Successfully synced {count} educational content items!\n\n"
+                f"Total in database: {self.edu_content_manager.educational_content_collection.count_documents({})}"
+            )
+        except Exception as e:
+            logger.error(f"Error syncing content: {e}")
+            await update.message.reply_text(f"❌ Error syncing content: {str(e)}")
+
+    async def preview_educational_content(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Admin command to preview a random educational content"""
+        user_id = update.effective_user.id
+        
+        if not self.is_admin(user_id):
+            await update.message.reply_text("❌ Only admins can use this command.")
+            return
+        
+        if not self.edu_content_manager:
+            await update.message.reply_text("❌ Educational content feature is not configured.")
+            return
+        
+        content = self.edu_content_manager.get_random_content()
+        
+        if not content:
+            await update.message.reply_text("❌ No educational content available in database.")
+            return
+        
+        try:
+            await update.message.reply_text("📚 <b>Preview of Random Educational Content:</b>", parse_mode=ParseMode.HTML)
+            
+            if content['type'] == 'text':
+                await update.message.reply_text(content['content'])
+            elif content['type'] == 'photo':
+                await context.bot.send_photo(
+                    chat_id=user_id,
+                    photo=content['file_id'],
+                    caption=content.get('caption', '')
+                )
+            elif content['type'] == 'video':
+                await context.bot.send_video(
+                    chat_id=user_id,
+                    video=content['file_id'],
+                    caption=content.get('caption', '')
+                )
+            elif content['type'] == 'document':
+                await context.bot.send_document(
+                    chat_id=user_id,
+                    document=content['file_id'],
+                    caption=content.get('caption', '')
+                )
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error previewing content: {str(e)}")
+
+    async def auto_sync_education_job(self, context: ContextTypes.DEFAULT_TYPE):
+        """Job to auto-sync educational content"""
+        if self.edu_content_manager:
+            try:
+                count = await self.edu_content_manager.fetch_and_store_content(context, limit=200)
+                logger.info(f"Auto-synced {count} educational content items")
+            except Exception as e:
+                logger.error(f"Error in auto-sync education job: {e}")
+  
     def create_health_server(self, port: int):
         """Create health check server"""
         async def health_check(request):
@@ -3973,6 +4052,17 @@ class BroadcastBot:
         application.add_handler(CommandHandler("pips", self.pips_calculator_v2)) # <-- MODIFIED
         application.add_handler(CommandHandler("positionsize", self.position_size_calculator))
         application.add_handler(CommandHandler("bestschedule", self.suggest_broadcast_time)) # <-- NEW
+
+        # Educational content management
+        application.add_handler(CommandHandler("synceducation", self.sync_educational_content))
+        application.add_handler(CommandHandler("previeweducation", self.preview_educational_content))
+        # ----------------------------
+
+        # Admin duty management
+        application.add_handler(CommandHandler("myduty", self.my_duty_command))
+        application.add_handler(CommandHandler("dutycomplete", self.duty_complete_command))
+        application.add_handler(CommandHandler("dutystats", self.duty_stats_command))
+        #
         
         # Templates
         application.add_handler(CommandHandler("templates", self.list_templates))
@@ -4031,11 +4121,28 @@ class BroadcastBot:
             self.re_engage_users_job,
             time=utc_12pm
         )
-        
-        # NEW: One-time promotion (runs 10s after boot)
-        # You can trigger this manually via an admin command or run it once
-        # application.job_queue.run_once(self.run_promo_job, 10)
 
+        # Auto-sync educational content daily (at 2 AM UTC)
+        if self.edu_content_manager:
+            utc_2am = dt_time(hour=2, minute=0, tzinfo=timezone.utc)
+            application.job_queue.run_daily(
+                self.auto_sync_education_job,
+                time=utc_2am
+            )
+
+        # Daily duty assignment (midnight UTC)
+        utc_midnight = dt_time(hour=0, minute=0, tzinfo=timezone.utc)
+        application.job_queue.run_daily(
+            self.assign_daily_duties_job,
+            time=utc_midnight
+        )
+
+        # Duty reminder (6 PM UTC for incomplete duties)
+        utc_6pm = dt_time(hour=18, minute=0, tzinfo=timezone.utc)
+        application.job_queue.run_daily(
+            self.send_duty_reminders_job,
+            time=utc_6pm
+        )
         return application
 
     # --- Wrapper for re-engagement job ---
@@ -5115,33 +5222,30 @@ class BroadcastBot:
             await update.message.reply_text("❌ Calculation error.")
 
     async def send_daily_tip(self, context: ContextTypes.DEFAULT_TYPE):
-        """Optional daily trading tip - users can opt out"""
+        """Send random educational content from database channel"""
         
-        tips = [
-            "💡 Tip: Never risk more than 1-2% of your account on a single trade.",
-            "💡 Tip: The best trades are often the ones you don't take. Patience wins.",
-            "💡 Tip: Set your stop loss BEFORE entering a trade, never after.",
-            "💡 Tip: High win rate doesn't mean profitable. Focus on risk/reward.",
-            "💡 Tip: Weekend gaps are real. Consider closing positions on Friday."
-        ]
+        if not self.edu_content_manager:
+            logger.warning("Educational content manager not initialized. Skipping daily tip.")
+            return
         
-        import random
-        tip = random.choice(tips) + "\n\n<i>Disable: /settings</i>"
-        
-        # Get all users (NotificationManager handles opt-outs)
+        # Get all users who haven't opted out
         all_users = self.db.get_all_users()
+        target_users = {
+            user_id for user_id in all_users 
+            if self.notification_manager.should_notify(user_id, 'tips')
+        }
         
-        for user_id in all_users:
-            if self.notification_manager.should_notify(user_id, 'tips'):
-                try:
-                    await context.bot.send_message(
-                        chat_id=user_id,
-                        text=tip,
-                        parse_mode=ParseMode.HTML
-                    )
-                    await asyncio.sleep(0.1)
-                except:
-                    pass
+        if not target_users:
+            logger.info("No users to send educational content to")
+            return
+        
+        # Broadcast random educational content
+        success, failed = await self.edu_content_manager.broadcast_random_content(
+            context, 
+            target_users
+        )
+        
+        logger.info(f"Daily educational content sent: {success} success, {failed} failed")
 
     # --- NEW: Settings Command & Handler ---
     async def settings_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
