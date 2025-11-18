@@ -1579,27 +1579,91 @@ class EducationalContentManager:
         self.db = db
         self.channel_id = channel_id
         self.educational_content_collection = self.db['educational_content']
-        self.educational_content_collection.create_index('message_id')
+        # Ensure unique index on message ID (or unique content)
+        self.educational_content_collection.create_index('message_id', unique=True)
         
-    async def fetch_and_store_content(self, context, limit: int = 100):
-        """
-        Fetch messages from the educational channel and store them in database.
-        This should be run periodically or manually by admin.
-        """
+    async def process_and_save(self, message):
+        """Extract content from a message and save to DB"""
+        if not message:
+            return False
+
+        content_type = 'text'
+        file_id = None
+        text_content = None
+        caption = message.caption
+
+        if message.text:
+            content_type = 'text'
+            text_content = message.text
+        elif message.photo:
+            content_type = 'photo'
+            file_id = message.photo[-1].file_id
+        elif message.video:
+            content_type = 'video'
+            file_id = message.video.file_id
+        elif message.document:
+            content_type = 'document'
+            file_id = message.document.file_id
+        else:
+            return False # Unsupported type
+
+        entry = {
+            'message_id': message.message_id,
+            'chat_id': message.chat.id,
+            'type': content_type,
+            'content': text_content,
+            'file_id': file_id,
+            'caption': caption,
+            'saved_at': time.time()
+        }
+
         try:
-            stored_count = 0
-            try:
-                messages = []
-                pass 
-            except:
-                pass
-             
-            logger.info(f"Stored {stored_count} educational content items")
-            return stored_count
-            
+            # Use update_one with upsert to prevent duplicates
+            self.educational_content_collection.update_one(
+                {'message_id': message.message_id, 'chat_id': message.chat.id},
+                {'$set': entry},
+                upsert=True
+            )
+            return True
         except Exception as e:
-            logger.error(f"Error fetching educational content: {e}")
-            return 0
+            logger.error(f"Error saving educational content: {e}")
+            return False
+
+    # NOTE: This function is kept for compatibility but warns about limitations
+    async def fetch_and_store_content(self, context, limit: int = 100):
+        logger.warning("Standard Bots cannot fetch history. Please forward messages to the bot or post new content to the channel to sync.")
+        return 0
+    
+    async def get_random_content(self):
+        """Get a random piece of content from the DB"""
+        pipeline = [{'$sample': {'size': 1}}]
+        result = list(self.educational_content_collection.aggregate(pipeline))
+        return result[0] if result else None
+
+    async def broadcast_random_content(self, context, target_users):
+        """Broadcast random content to a list of users"""
+        content = await self.get_random_content()
+        if not content:
+            return 0, 0
+
+        success = 0
+        failed = 0
+        
+        for user_id in target_users:
+            try:
+                if content['type'] == 'text':
+                    await context.bot.send_message(chat_id=user_id, text=content['content'])
+                elif content['type'] == 'photo':
+                    await context.bot.send_photo(chat_id=user_id, photo=content['file_id'], caption=content.get('caption'))
+                elif content['type'] == 'video':
+                    await context.bot.send_video(chat_id=user_id, video=content['file_id'], caption=content.get('caption'))
+                elif content['type'] == 'document':
+                    await context.bot.send_document(chat_id=user_id, document=content['file_id'], caption=content.get('caption'))
+                success += 1
+            except:
+                failed += 1
+                
+        return success, failed
 
 class AdminDutyManager:
     """Manages daily task assignments for admins"""
