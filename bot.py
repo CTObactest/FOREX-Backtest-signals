@@ -4426,6 +4426,28 @@ class BroadcastBot:
             except Exception as e:
                 logger.error(f"Failed to send duty reminder to {admin_id}: {e}")
 
+    async def channel_post_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Auto-save new posts from the educational channel"""
+        # Verify it's the correct channel
+        # Note: self.edu_content_manager.channel_id might be a string like "-1001234567890"
+        if str(update.effective_chat.id) == str(self.edu_content_manager.channel_id):
+            saved = await self.edu_content_manager.process_and_save(update.channel_post)
+            if saved:
+                logger.info(f"Saved new educational content: {update.channel_post.message_id}")
+
+    async def forward_listener(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Allow admins to forward old posts to backfill the database"""
+        user_id = update.effective_user.id
+        if not self.is_admin(user_id):
+            return
+
+        # Check if it's a forward
+        if update.message.forward_from_chat:
+             # You can verify the chat ID here if you want strict control
+             saved = await self.edu_content_manager.process_and_save(update.message)
+             if saved:
+                 await update.message.reply_text("✅ Content saved to educational database!")
+
   
     def create_health_server(self, port: int):
         """Create health check server"""
@@ -4695,6 +4717,28 @@ class BroadcastBot:
                 self.handle_greeting,
             )
         )
+
+        if self.edu_content_manager:
+            # 1. Listen for NEW posts in the channel
+            # Ensure your .env EDUCATION_CHANNEL_ID matches the channel ID exactly (e.g., -100...)
+            try:
+                channel_id_int = int(self.edu_content_manager.channel_id)
+                application.add_handler(
+                    MessageHandler(
+                        filters.Chat(chat_id=channel_id_int) & filters.UpdateType.CHANNEL_POST,
+                        self.channel_post_handler
+                    )
+                )
+            except ValueError:
+                logger.error("EDUCATION_CHANNEL_ID must be an integer (e.g. -10012345...) for the listener to work.")
+
+            # 2. Allow admins to forward old messages to the bot to save them
+            application.add_handler(
+                MessageHandler(
+                    filters.FORWARDED & filters.User(user_id=self.super_admin_ids), 
+                    self.forward_listener
+                )
+            )
 
         # Error handler
         application.add_error_handler(self.error_handler)
