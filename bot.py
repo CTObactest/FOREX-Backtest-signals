@@ -2223,90 +2223,138 @@ class BroadcastBot:
     
         await query.edit_message_text(example, parse_mode=ParseMode.HTML)
 
-    # Auto-validate signal format
+    async def handle_force_submit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle forced submission after warning"""
+        query = update.callback_query
+        await query.answer()
+    
+        if query.data == "force_submit_text":
+            text = context.user_data.get('pending_signal_text')
+            if text:
+                message_data = {
+                    'type': 'text',
+                    'content': text + "\n\n⚠️ [Low quality warning - submitted anyway]"
+                }
+            
+                suggestion_id = self.db.create_signal_suggestion(
+                    message_data,
+                    query.from_user.id,
+                    query.from_user.first_name or query.from_user.username or str(query.from_user.id)
+                )
+            
+                if suggestion_id:
+                    self.engagement_tracker.update_engagement(query.from_user.id, 'signal_suggested')
+                    await self.achievement_system.check_and_award_achievements(query.from_user.id, context, self.db)
+                    await query.edit_message_text(
+                        "✅ Signal submitted!\n\n"
+                        "⚠️ Note: Low-quality signals may receive lower ratings."
+                    )
+                    await self.notify_super_admins_new_suggestion(context, suggestion_id)
+                else:
+                    await query.edit_message_text("❌ Failed to submit.")
+            return ConversationHandler.END
+    
+        elif query.data == "cancel_signal":
+            await query.edit_message_text("❌ Cancelled. Send /suggestsignal to try again.")
+            return ConversationHandler.END
+            
     def validate_signal_format(self, text: str) -> (bool, str):
         """Check if signal meets minimum quality standards"""
-        required_elements = ['pair', 'entry', 'sl'] # SL = Stop Loss
+        required_elements = ['pair', 'entry']
         text_lower = text.lower()
     
         missing = []
         for element in required_elements:
-            # Check for element and some value after it
             if f"{element}:" not in text_lower and element not in text_lower:
-                 missing.append(element.upper())
-        
-        if missing:
-            return False, f"Missing required fields: {', '.join(missing)}. Please include Pair, Entry, and SL."
+                missing.append(element.upper())
     
-        # Check for common pairs
-        pairs = ['EUR', 'USD', 'GBP', 'JPY', 'AUD', 'NZD', 'CAD', 'CHF', 'XAU', 'GOLD', 'V25', 'V75']
+        if missing:
+            return False, f"Missing required fields: {', '.join(missing)}. Please include at least Pair and Entry."
+    
+        # TWEAK: Expand pair detection to include more formats
+        pairs = ['EUR', 'USD', 'GBP', 'JPY', 'AUD', 'NZD', 'CAD', 'CHF', 
+                 'XAU', 'GOLD', 'SILVER', 'XAG', 'OIL', 'CRUDE',
+                 'V25', 'V75', 'V100', 'BOOM', 'CRASH',  # Deriv indices
+                 'US30', 'NAS100', 'SPX500']  # Added indices
         has_pair = any(pair in text.upper() for pair in pairs)
     
+        # TWEAK: More flexible pair format matching
         if not has_pair:
-            # Check for common pair formats like XXX/YYY
-            if not re.search(r'[A-Z]{3}/[A-Z]{3}', text.upper()):
-                return False, "Could not identify trading pair. Use format like 'EUR/USD' or 'GOLD'."
-        
-        # --- THIS LINE WAS MISSING ---
+            # Match XXX/YYY, XXXYYY, or common formats
+            if not re.search(r'[A-Z]{3}[/\s]?[A-Z]{3}', text.upper()):
+                return False, "Could not identify trading pair. Use format like 'EUR/USD', 'EURUSD' or 'GOLD'."
+    
+        # TWEAK: Add minimum length check instead of strict format
+        if len(text.strip()) < 20:
+            return False, "Signal description is too short. Please provide more details (entry, target, reasoning)."
+    
         return True, "Valid"
 
     async def validate_signal_image(self, photo_file: 'telegram.PhotoSize') -> (bool, str, str):
-        """
-        Validate a signal image for clarity and content.
-        Returns (is_valid, error_message, extracted_text)
-        """
-        MIN_WIDTH = 300
-        MIN_HEIGHT = 200
+        """Validate signal image - MORE LENIENT"""
+        # TWEAK: Reduce minimum dimensions
+        MIN_WIDTH = 200   # Was 300
+        MIN_HEIGHT = 150  # Was 200
 
-        # 1. Check dimensions
         if photo_file.width < MIN_WIDTH or photo_file.height < MIN_HEIGHT:
             return False, f"Image is too small ({photo_file.width}x{photo_file.height}). Minimum is {MIN_WIDTH}x{MIN_HEIGHT}px.", ""
-        
+    
         try:
-            # 2. Download image
             photo_bytes = await (await photo_file.get_file()).download_as_bytearray()
             image = Image.open(io.BytesIO(photo_bytes))
-            
-            # 3. Use Tesseract to extract text
-            extracted_text = pytesseract.image_to_string(image)
-            
-            if not extracted_text or len(extracted_text) < 10:
-                return False, "Image is unclear. Could not read any text from it.", ""
-            
-            # 4. Now, validate the *extracted text*
-            is_valid, reason = self.validate_signal_format(extracted_text)
-            
-            if not is_valid:
-                return False, f"Image text is incomplete. {reason}", extracted_text
-            
-            return True, "Image is valid", extracted_text
         
+            image = image.convert('L')
+        
+            extracted_text = pytesseract.image_to_string(image)
+        
+            if not extracted_text or len(extracted_text.strip()) < 5:  # Was 10
+                return False, "Image is unclear. Could not read any text from it.", ""
+        
+            if len(extracted_text.strip()) >= 15:  # Only validate longer texts
+                is_valid, reason = self.validate_signal_format(extracted_text)
+            
+                if not is_valid:
+                    return False, f"Image text is incomplete. {reason}", extracted_text
+            else:
+                # TWEAK: Accept image even if OCR is poor (admin will review)
+                logger.info(f"Low OCR quality ({len(extracted_text)} chars), accepting for manual review")
+        
+            return True, "Image is valid", extracted_text
+    
         except Exception as e:
             logger.error(f"Error processing signal image: {e}")
             return False, "Failed to process image. It might be in an unsupported format.", ""
     
     async def receive_signal_suggestion(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Receive signal suggestion message with validation"""
+        """Receive signal suggestion with WARNING system instead of hard rejection"""
         user = update.effective_user
         message = update.message
-        
+    
         message_data = {
             'type': 'text',
             'content': None
         }
 
         if message.text:
-            # --- 1. VALIDATE TEXT ---
             is_valid, reason = self.validate_signal_format(message.text)
             if not is_valid:
-                await update.message.reply_text(
-                    f"❌ <b>Signal Rejected (Low Quality)</b>\n\n"
-                    f"<b>Reason:</b> {reason}\n\n"
-                    f"Please check the format and resubmit.",
-                    parse_mode=ParseMode.HTML
-                )
-                return ConversationHandler.END
+                # TWEAK: Warning instead of rejection
+                keyboard = [
+                    [InlineKeyboardButton("✅ Submit Anyway", callback_data=f"force_submit_text")],
+                    [InlineKeyboardButton("❌ Cancel & Fix", callback_data="cancel_signal")]
+                ]
+                context.user_data['pending_signal_text'] = message.text
             
+                await update.message.reply_text(
+                    f"⚠️ <b>Quality Check Warning</b>\n\n"
+                    f"<b>Issue:</b> {reason}\n\n"
+                    f"You can still submit, but it may be rejected by admins.\n"
+                    f"Tip: High-quality signals get better ratings!",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+                return ConversationHandler.END  # Wait for callback
+        
             message_data['type'] = 'text'
             message_data['content'] = message.text
 
@@ -2316,37 +2364,35 @@ class BroadcastBot:
             message_data['file_id'] = photo.file_id
             message_data['caption'] = message.caption
 
-            # --- 1. VALIDATE CAPTION FIRST ---
             if message.caption:
                 is_valid, reason = self.validate_signal_format(message.caption)
                 if not is_valid:
-                    # Caption is present but invalid, reject it
+                    # TWEAK: Show warning but allow submission
                     await update.message.reply_text(
-                        f"❌ <b>Signal Rejected (Invalid Caption)</b>\n\n"
-                        f"<b>Reason:</b> {reason}\n\n"
-                        f"Please check your caption format and resubmit.",
+                        f"⚠️ Caption may be incomplete: {reason}\n\n"
+                        f"✅ Submitting anyway since you included an image...",
                         parse_mode=ParseMode.HTML
                     )
-                    return ConversationHandler.END
-                # If caption is valid, we'll fall through to the save block
-            
-            # --- 2. IF NO CAPTION, VALIDATE IMAGE (OCR) ---
-            else: 
+            else:
                 is_valid, reason, ocr_text = await self.validate_signal_image(photo)
-                
-                if not is_valid:
+            
+                if not is_valid and "too small" in reason.lower():
+                    # Hard reject only for very small images
                     await update.message.reply_text(
-                        f"❌ <b>Signal Rejected (Unclear Image)</b>\n\n"
-                        f"<b>Reason:</b> {reason}\n\n"
-                        f"Please send a clear screenshot (or add a caption with the signal details).",
+                        f"❌ {reason}",
                         parse_mode=ParseMode.HTML
                     )
                     return ConversationHandler.END
-                
-                # If OCR was successful, add extracted text as caption
+                elif not is_valid:
+                    # Soft warning for OCR issues
+                    await update.message.reply_text(
+                        f"⚠️ {reason}\n\n"
+                        f"✅ Submitting for manual review...",
+                        parse_mode=ParseMode.HTML
+                    )
+            
                 if not message_data['caption'] and ocr_text:
                     message_data['caption'] = f"[Extracted Text]:\n{ocr_text[:500]}..."
-
         elif message.video:
             # We can't validate video, so we just accept it
             message_data['type'] = 'video'
@@ -3835,6 +3881,7 @@ class BroadcastBot:
 
         # Signal suggestions
         application.add_handler(signal_handler)
+        application.add_handler(CallbackQueryHandler(self.handle_force_submit, pattern="^(force_submit_text|cancel_signal)$"))
 
         # Subscription and VIP request handling
         application.add_handler(subscribe_handler)
