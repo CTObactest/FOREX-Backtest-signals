@@ -1579,8 +1579,14 @@ class EducationalContentManager:
         self.db = db
         self.channel_id = channel_id
         self.educational_content_collection = self.db['educational_content']
-        # Ensure unique index on message ID (or unique content)
-        self.educational_content_collection.create_index('message_id', unique=True)
+        
+        # FIX: Use a composite unique index with an explicit name to avoid deployment conflicts
+        self.educational_content_collection.create_index(
+            [('message_id', 1), ('chat_id', 1)], 
+            unique=True,
+            name='educational_content_id_chat_unique',
+            background=True # Prevents blocking on startup
+        )
         
     async def process_and_save(self, message):
         """Extract content from a message and save to DB"""
