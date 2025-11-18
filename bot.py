@@ -2244,10 +2244,40 @@ class BroadcastBot:
             
                 if suggestion_id:
                     self.engagement_tracker.update_engagement(query.from_user.id, 'signal_suggested')
+                        await self.achievement_system.check_and_award_achievements(query.from_user.id, context, self.db)
+                        await query.edit_message_text(
+                        "✅ Signal submitted!\n\n"
+                        "⚠️ Note: Low-quality signals may receive lower ratings."
+                    )
+                    await self.notify_super_admins_new_suggestion(context, suggestion_id)
+                else:
+                    await query.edit_message_text("❌ Failed to submit.")
+            return ConversationHandler.END
+    
+        elif query.data == "force_submit_photo":
+            photo_data = context.user_data.get('pending_signal_photo')
+            if photo_data:
+                ocr_text = photo_data.get('ocr_text', '')
+                caption_text = f"[Extracted Text]:\n{ocr_text[:500]}...\n\n⚠️ [Low quality warning - submitted anyway]" if ocr_text else "⚠️ [Low quality warning - submitted anyway]"
+            
+                message_data = {
+                    'type': 'photo',
+                    'file_id': photo_data['file_id'],
+                    'caption': caption_text
+                }
+            
+                suggestion_id = self.db.create_signal_suggestion(
+                    message_data,
+                    query.from_user.id,
+                    query.from_user.first_name or query.from_user.username or str(query.from_user.id)
+                )
+            
+                if suggestion_id:
+                    self.engagement_tracker.update_engagement(query.from_user.id, 'signal_suggested')
                     await self.achievement_system.check_and_award_achievements(query.from_user.id, context, self.db)
                     await query.edit_message_text(
                         "✅ Signal submitted!\n\n"
-                        "⚠️ Note: Low-quality signals may receive lower ratings."
+                        "⚠️ Note: Low-quality images may receive lower ratings."
                     )
                     await self.notify_super_admins_new_suggestion(context, suggestion_id)
                 else:
@@ -2373,26 +2403,37 @@ class BroadcastBot:
                         f"✅ Submitting anyway since you included an image...",
                         parse_mode=ParseMode.HTML
                     )
-            else:
+            else: 
                 is_valid, reason, ocr_text = await self.validate_signal_image(photo)
-            
+    
                 if not is_valid and "too small" in reason.lower():
-                    # Hard reject only for very small images
                     await update.message.reply_text(
                         f"❌ {reason}",
                         parse_mode=ParseMode.HTML
                     )
                     return ConversationHandler.END
-                elif not is_valid:
-                    # Soft warning for OCR issues
-                    await update.message.reply_text(
-                        f"⚠️ {reason}\n\n"
-                        f"✅ Submitting for manual review...",
-                        parse_mode=ParseMode.HTML
-                    )
-            
-                if not message_data['caption'] and ocr_text:
-                    message_data['caption'] = f"[Extracted Text]:\n{ocr_text[:500]}..."
+            elif not is_valid:
+                keyboard = [
+                    [InlineKeyboardButton("✅ Submit Anyway", callback_data="force_submit_photo")],
+                    [InlineKeyboardButton("❌ Cancel & Fix", callback_data="cancel_signal")]
+                ]
+                context.user_data['pending_signal_photo'] = {
+                    'file_id': photo.file_id,
+                    'ocr_text': ocr_text
+                }
+        
+                await update.message.reply_text(
+                    f"⚠️ <b>Image Quality Warning</b>\n\n"
+                    f"<b>Issue:</b> {reason}\n\n"
+                    f"You can still submit, but it may be rejected by admins.\n"
+                    f"Tip: Clear screenshots with visible text get better ratings!",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+                return ConversationHandler.END
+    
+            if not message_data['caption'] and ocr_text:
+                message_data['caption'] = f"[Extracted Text]:\n{ocr_text[:500]}..."
         elif message.video:
             # We can't validate video, so we just accept it
             message_data['type'] = 'video'
