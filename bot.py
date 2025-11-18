@@ -2244,8 +2244,8 @@ class BroadcastBot:
             
                 if suggestion_id:
                     self.engagement_tracker.update_engagement(query.from_user.id, 'signal_suggested')
-                        await self.achievement_system.check_and_award_achievements(query.from_user.id, context, self.db)
-                        await query.edit_message_text(
+                    await self.achievement_system.check_and_award_achievements(query.from_user.id, context, self.db)
+                    await query.edit_message_text(
                         "✅ Signal submitted!\n\n"
                         "⚠️ Note: Low-quality signals may receive lower ratings."
                     )
