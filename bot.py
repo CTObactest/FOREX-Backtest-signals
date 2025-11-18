@@ -2412,28 +2412,28 @@ class BroadcastBot:
                         parse_mode=ParseMode.HTML
                     )
                     return ConversationHandler.END
-            elif not is_valid:
-                keyboard = [
-                    [InlineKeyboardButton("✅ Submit Anyway", callback_data="force_submit_photo")],
-                    [InlineKeyboardButton("❌ Cancel & Fix", callback_data="cancel_signal")]
-                ]
-                context.user_data['pending_signal_photo'] = {
-                    'file_id': photo.file_id,
-                    'ocr_text': ocr_text
-                }
+                elif not is_valid:
+                    keyboard = [
+                        [InlineKeyboardButton("✅ Submit Anyway", callback_data="force_submit_photo")],
+                        [InlineKeyboardButton("❌ Cancel & Fix", callback_data="cancel_signal")]
+                    ]
+                    context.user_data['pending_signal_photo'] = {
+                        'file_id': photo.file_id,
+                        'ocr_text': ocr_text
+                    }
         
-                await update.message.reply_text(
-                    f"⚠️ <b>Image Quality Warning</b>\n\n"
-                    f"<b>Issue:</b> {reason}\n\n"
-                    f"You can still submit, but it may be rejected by admins.\n"
-                    f"Tip: Clear screenshots with visible text get better ratings!",
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=InlineKeyboardMarkup(keyboard)
-                )
-                return ConversationHandler.END
+                    await update.message.reply_text(
+                        f"⚠️ <b>Image Quality Warning</b>\n\n"
+                        f"<b>Issue:</b> {reason}\n\n"
+                        f"You can still submit, but it may be rejected by admins.\n"
+                        f"Tip: Clear screenshots with visible text get better ratings!",
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=InlineKeyboardMarkup(keyboard)
+                   )
+                    return ConversationHandler.END
     
-            if not message_data['caption'] and ocr_text:
-                message_data['caption'] = f"[Extracted Text]:\n{ocr_text[:500]}..."
+                if not message_data['caption'] and ocr_text:
+                    message_data['caption'] = f"[Extracted Text]:\n{ocr_text[:500]}..."
         elif message.video:
             # We can't validate video, so we just accept it
             message_data['type'] = 'video'
