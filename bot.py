@@ -4123,7 +4123,8 @@ class BroadcastBot:
             await update.message.reply_text("❌ Educational content feature is not configured.")
             return
         
-        content = self.edu_content_manager.get_random_content()
+        # FIX: Added 'await' to resolve the RuntimeWarning
+        content = await self.edu_content_manager.get_random_content()
         
         if not content:
             await update.message.reply_text("❌ No educational content available in database.")
