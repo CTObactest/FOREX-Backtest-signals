@@ -1623,6 +1623,18 @@ class BroadcastBot:
                 logger.info("Finnhub client initialized successfully.")
             except Exception as e:
                 logger.error(f"Failed to initialize Finnhub client: {e}")
+
+        EDUCATION_CHANNEL_ID = os.getenv('EDUCATION_CHANNEL_ID')
+        if EDUCATION_CHANNEL_ID:
+            self.edu_content_manager = EducationalContentManager(
+                self.db.db,  # Pass the database object
+                EDUCATION_CHANNEL_ID
+            )
+            logger.info(f"Educational Content Manager initialized for channel: {EDUCATION_CHANNEL_ID}")
+        else:
+            self.edu_content_manager = None
+            logger.warning("EDUCATION_CHANNEL_ID not set. Educational content feature disabled.")
+        
         self.cr_numbers = {
             "CR5499637", "CR5500382", "CR5529877", "CR5535613", "CR5544922", "CR5551288",
             "CR5552176", "CR5556284", "CR5556287", "CR5561483", "CR5563616", "CR5577880",
