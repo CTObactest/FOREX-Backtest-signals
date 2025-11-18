@@ -2299,7 +2299,7 @@ class BroadcastBot:
                     "/broadcast - Start broadcasting",
                     "/schedule - Schedule a broadcast",
                     "/scheduled - View scheduled broadcasts",
-                    "/bestschedule - View optimal broadcast times", // MOVED HERE
+                    "/bestschedule - View optimal broadcast times",
                 ]
             },
             'admin_approvals': {
@@ -2359,7 +2359,6 @@ class BroadcastBot:
                 'cmds': [
                     "/logs - View activity logs (Super Admin only)",
                     "/mystats - Your individual performance statistics",
-                    // /bestschedule REMOVED from here
                 ]
             },
             'admin_help': {
