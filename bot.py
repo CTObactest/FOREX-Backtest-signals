@@ -29,6 +29,7 @@ import finnhub
 from telegram.constants import ParseMode
 import random
 from typing import List, Dict, Optional
+import tweepy
 
 # Enable logging
 logging.basicConfig(
@@ -1942,7 +1943,147 @@ class AdminDutyManager:
         
         results = list(self.admin_duties_collection.aggregate(pipeline))
         return results
+class TwitterIntegration:
+    """Auto-post bot content to Twitter"""
+    
+    def __init__(self):
+        self.api_key = os.getenv('TWITTER_API_KEY')
+        self.api_secret = os.getenv('TWITTER_API_SECRET')
+        self.access_token = os.getenv('TWITTER_ACCESS_TOKEN')
+        self.access_secret = os.getenv('TWITTER_ACCESS_SECRET')
+        
+        if all([self.api_key, self.api_secret, self.access_token, self.access_secret]):
+            auth = tweepy.OAuthHandler(self.api_key, self.api_secret)
+            auth.set_access_token(self.access_token, self.access_secret)
+            self.client = tweepy.Client(
+                consumer_key=self.api_key,
+                consumer_secret=self.api_secret,
+                access_token=self.access_token,
+                access_token_secret=self.access_secret
+            )
+            self.api = tweepy.API(auth)  # For media uploads
+            logger.info("Twitter integration enabled")
+        else:
+            self.client = None
+            self.api = None
+            logger.warning("Twitter credentials not set")
+    
+    async def _upload_telegram_photo(self, context, file_id):
+        """Download photo from Telegram and upload to Twitter"""
+        try:
+            # 1. Get file info from Telegram
+            new_file = await context.bot.get_file(file_id)
+            
+            # 2. Download to memory buffer
+            bio = io.BytesIO()
+            await new_file.download_to_memory(bio)
+            bio.seek(0)
+            
+            # 3. Upload to Twitter (v1.1 API)
+            # Note: tweepy.API calls are synchronous, might block slightly but usually fine for images
+            media = self.api.media_upload(filename="signal.jpg", file=bio)
+            return [media.media_id]
+        except Exception as e:
+            logger.error(f"Error uploading photo to Twitter: {e}")
+            return []
 
+    async def post_signal(self, context, suggestion: Dict) -> Optional[str]:
+        """Post approved signal to Twitter"""
+        if not self.client:
+            return None
+        
+        try:
+            message_data = suggestion['message_data']
+            suggester = suggestion['suggester_name']
+            rating = suggestion.get('rating', 0)
+            
+            # Format tweet
+            tweet_text = self._format_signal_tweet(message_data, suggester, rating)
+            
+            # Handle media
+            media_ids = []
+            if message_data['type'] == 'photo':
+                media_ids = await self._upload_telegram_photo(context, message_data['file_id'])
+            
+            # Post tweet
+            response = self.client.create_tweet(
+                text=tweet_text,
+                media_ids=media_ids if media_ids else None
+            )
+            
+            tweet_url = f"https://twitter.com/user/status/{response.data['id']}"
+            return tweet_url
+            
+        except Exception as e:
+            logger.error(f"Failed to post to Twitter: {e}")
+            return None
+    
+    def _format_signal_tweet(self, message_data: Dict, suggester: str, rating: int) -> str:
+        """Format signal for Twitter (280 char limit)"""
+        
+        if message_data['type'] == 'text':
+            content = message_data['content']
+        else:
+            content = message_data.get('caption') or "New Signal Alert"
+        
+        # Truncate if needed
+        max_length = 200  # Leave room for attribution
+        if len(content) > max_length:
+            content = content[:max_length] + "..."
+        
+        stars = "⭐" * rating if rating else ""
+        
+        tweet = f"💡 Trading Signal {stars}\n\n{content}\n\n🤖 Verified by PipSage"
+        return tweet[:280]  # Twitter limit
+    
+    async def post_daily_tip(self, content: Dict) -> Optional[str]:
+        """Post educational content"""
+        if not self.client:
+            return None
+        
+        try:
+            if content['type'] == 'text':
+                text_content = content['content']
+            else:
+                text_content = content.get('caption') or "Trading Tip"
+
+            tweet_text = f"📚 Daily Trading Tip\n\n{text_content[:200]}\n\n#ForexEducation #TradingTips"
+            
+            response = self.client.create_tweet(text=tweet_text[:280])
+            return f"https://twitter.com/user/status/{response.data['id']}"
+            
+        except Exception as e:
+            logger.error(f"Failed to post tip to Twitter: {e}")
+            return None
+    
+    async def post_performance_update(self, stats: Dict) -> Optional[str]:
+        """Weekly performance transparency post"""
+        if not self.client:
+            return None
+        
+        try:
+            # Extract stats safely
+            total = stats.get('total_signals', 0)
+            avg = stats.get('avg_rating', 0)
+            excellent = stats.get('excellent_signals', 0)
+            win_rate = (excellent / total * 100) if total > 0 else 0
+
+            tweet = (
+                f"📊 Weekly Performance Report\n\n"
+                f"✅ Signals: {total}\n"
+                f"⭐ Avg Rating: {avg:.1f}/5.0\n"
+                f"🎯 Quality Rate: {win_rate:.1f}%\n\n"
+                f"Transparent. Verified. Real.\n\n"
+                f"#ForexSignals #TradingResults"
+            )
+            
+            response = self.client.create_tweet(text=tweet)
+            return f"https://twitter.com/user/status/{response.data['id']}"
+            
+        except Exception as e:
+            logger.error(f"Failed to post performance: {e}")
+            return None
+            
 class BroadcastBot:
     def __init__(self, token: str, super_admin_ids: List[int], mongo_handler: MongoDBHandler):
         self.token = token
@@ -1956,6 +2097,7 @@ class BroadcastBot:
         self.notification_manager = NotificationManager(self.db)
         self.referral_system = ReferralSystem()
         self.achievement_system = AchievementSystem()
+        self.twitter = TwitterIntegration()
         # ----------------------
 
         self.finnhub_client = None
@@ -3220,6 +3362,15 @@ class BroadcastBot:
                 failed_count += 1
 
         logger.info(f"Signal broadcast completed: {success_count} success, {failed_count} failed")
+        tweet_url = await self.twitter.post_signal(context, suggestion)
+        if tweet_url:
+            try:
+                await context.bot.send_message(
+                    chat_id=suggestion['suggested_by'],
+                    text=f"🎉 Your signal was also shared on Twitter!\n{tweet_url}"
+                )
+            except:
+                pass
 
     # Approval System
     async def list_approvals(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -4826,6 +4977,13 @@ class BroadcastBot:
             self.send_duty_reminders_job,
             time=utc_6pm
         )
+        # NEW: Weekly Twitter performance (Sunday 18:00 UTC)
+        utc_6pm = dt_time(hour=18, minute=0, tzinfo=timezone.utc)
+        application.job_queue.run_daily(
+            self.post_weekly_performance_to_twitter,
+            time=utc_6pm,
+            days=(6,)  # 0=Monday, 6=Sunday
+        )
         return application
 
     # --- Wrapper for re-engagement job ---
@@ -5929,8 +6087,39 @@ class BroadcastBot:
         )
         
         logger.info(f"Daily educational content sent: {success} success, {failed} failed")
+        content = await self.edu_content_manager.get_random_content()
+        if content:
+            await self.twitter.post_daily_tip(content)
 
-    # --- NEW: Settings Command & Handler ---
+    async def post_weekly_performance_to_twitter(self, context: ContextTypes.DEFAULT_TYPE):
+        """Job: Weekly transparency post on Twitter"""
+        thirty_days_ago = time.time() - (30 * 86400)
+        
+        pipeline = [
+            {
+                '$match': {
+                    'status': 'approved',
+                    'reviewed_at': {'$gte': thirty_days_ago},
+                    'rating': {'$exists': True}
+                }
+            },
+            {
+                '$group': {
+                    '_id': None,
+                    'total_signals': {'$sum': 1},
+                    'avg_rating': {'$avg': '$rating'},
+                    'excellent_signals': {
+                        '$sum': {'$cond': [{'$gte': ['$rating', 4]}, 1, 0]}
+                    }
+                }
+            }
+        ]
+        
+        stats_list = list(self.db.signal_suggestions_collection.aggregate(pipeline))
+        
+        if stats_list:
+            await self.twitter.post_performance_update(stats_list[0])
+
     async def settings_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Let users control their experience"""
         
