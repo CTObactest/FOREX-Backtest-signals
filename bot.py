@@ -2535,6 +2535,10 @@ class BroadcastBot:
                 keyboard.append([InlineKeyboardButton("✅ Approval System", callback_data='admin_approvals')])
             
             keyboard.append([InlineKeyboardButton("📝 Templates", callback_data='admin_templates')])
+            keyboard.append([InlineKeyboardButton("📋 Team Duties & QA", callback_data='admin_duties')])
+                
+            if user_id in self.super_admin_ids: 
+                 keyboard.append([InlineKeyboardButton("📚 Content & Education", callback_data='admin_content')])
             keyboard.append([InlineKeyboardButton("👥 User Management", callback_data='admin_users')])
             
             if self.has_permission(user_id, Permission.MANAGE_ADMINS):
