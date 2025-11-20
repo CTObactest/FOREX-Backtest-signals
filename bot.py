@@ -4802,7 +4802,7 @@ class BroadcastBot:
         else:
             await update.message.reply_text("❌ Failed to mark duty as complete. Please try again.")
     
-async def duty_stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def duty_stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show duty completion statistics with team collaboration"""
         user_id = update.effective_user.id
         
