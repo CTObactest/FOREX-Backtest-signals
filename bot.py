@@ -1614,8 +1614,37 @@ class EducationalContentManager:
         except Exception as e:
             logger.error(f"Error saving educational content: {e}")
             return False
+            
+    async def broadcast_specific_content(self, context, target_users, content):
+        """Broadcast a SPECIFIC piece of content to a list of users"""
+        if not content:
+            return 0, 0
 
-    # NOTE: This function is kept for compatibility but warns about limitations
+        success = 0
+        failed = 0
+        
+        footer = "\n\n🔕 Disable: /settings then toggle off Daily Tips"
+        
+        for user_id in target_users:
+            try:
+                if content['type'] == 'text':
+                    text_to_send = content['content'] + footer
+                    await context.bot.send_message(chat_id=user_id, text=text_to_send)
+                elif content['type'] == 'photo':
+                    caption_to_send = (content.get('caption') or '') + footer
+                    await context.bot.send_photo(chat_id=user_id, photo=content['file_id'], caption=caption_to_send)
+                elif content['type'] == 'video':
+                    caption_to_send = (content.get('caption') or '') + footer
+                    await context.bot.send_video(chat_id=user_id, video=content['file_id'], caption=caption_to_send)
+                elif content['type'] == 'document':
+                    caption_to_send = (content.get('caption') or '') + footer
+                    await context.bot.send_document(chat_id=user_id, document=content['file_id'], caption=caption_to_send)
+                success += 1
+            except:
+                failed += 1
+                
+        return success, failed
+
     async def fetch_and_store_content(self, context, limit: int = 100):
         logger.warning("Standard Bots cannot fetch history. Please forward messages to the bot or post new content to the channel to sync.")
         return 0
@@ -1635,17 +1664,14 @@ class EducationalContentManager:
         success = 0
         failed = 0
         
-        # Define the footer
         footer = "\n\n🔕 Disable: /settings then toggle off Daily Tips"
         
         for user_id in target_users:
             try:
                 if content['type'] == 'text':
-                    # Append footer to text
                     text_to_send = content['content'] + footer
                     await context.bot.send_message(chat_id=user_id, text=text_to_send)
                 elif content['type'] == 'photo':
-                    # Append footer to caption
                     caption_to_send = (content.get('caption') or '') + footer
                     await context.bot.send_photo(chat_id=user_id, photo=content['file_id'], caption=caption_to_send)
                 elif content['type'] == 'video':
@@ -1662,8 +1688,6 @@ class EducationalContentManager:
 
 class AdminDutyManager:
     """Manages daily task assignments for admins"""
-    
-    # Define duty categories with specific tasks
     DUTY_CATEGORIES = {
         'signal_review': {
             'name': '💡 Signal Review Duty',
