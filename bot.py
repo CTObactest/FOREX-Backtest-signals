@@ -5512,6 +5512,7 @@ class BroadcastBot:
         if action == "approve":
             self.db.add_subscriber(user_id)
             self.db.log_activity(admin_id, 'vip_approved', {'user_id': user_id})
+            self.admin_duty_manager.credit_duty_for_action(admin_id, 'vip_approved')
 
             self.engagement_tracker.update_engagement(user_id, 'vip_subscribed')
             
