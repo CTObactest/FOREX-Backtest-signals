@@ -1770,6 +1770,206 @@ class AdminDutyManager:
         # Create indexes
         self.admin_duties_collection.create_index([('date', -1)])
         self.admin_duties_collection.create_index('admin_id')
+
+    def credit_duty_for_action(self, admin_id: int, action: str) -> bool:
+        """
+        Give credit to admin's duty when they perform relevant actions.
+        Called whenever an admin does work that counts toward duties.
+        """
+        date_key = self.get_date_key()
+        
+        # Map actions to duty categories
+        action_to_duty = {
+            'signal_approved': 'signal_review',
+            'signal_rejected': 'signal_review',
+            'broadcast_approved': 'broadcast_approval',
+            'broadcast_rejected': 'broadcast_approval',
+            'broadcast_sent': 'user_engagement',
+            'create_template': 'content_creation',
+            'vip_approved': 'user_engagement',
+            'vip_declined': 'user_engagement',
+        }
+        
+        duty_category = action_to_duty.get(action)
+        
+        if not duty_category:
+            return False
+        
+        # Find if this admin has this duty today OR if ANY admin has this duty
+        # We'll credit the action to ALL admins with this duty (Collaborative Credit)
+        duties_to_credit = list(self.admin_duties_collection.find({
+            'date': date_key,
+            'duty_category': duty_category,
+            'completed': False
+        }))
+        
+        if not duties_to_credit:
+            return False
+        
+        # Add action record to each matching duty
+        for duty in duties_to_credit:
+            self.admin_duties_collection.update_one(
+                {'_id': duty['_id']},
+                {
+                    '$push': {
+                        'actions_taken': {
+                            'action': action,
+                            'by_admin': admin_id,
+                            'at': time.time()
+                        }
+                    },
+                    '$inc': {'action_count': 1}
+                }
+            )
+        
+        logger.info(f"Credited {action} to {len(duties_to_credit)} admin(s) with {duty_category} duty")
+        return True
+
+    def _check_if_work_existed(self, duty_category: str, date_key: str) -> bool:
+        """Check if there was work AND if it was handled by anyone"""
+        try:
+            date_obj = datetime.strptime(date_key, '%Y-%m-%d')
+            start_timestamp = date_obj.replace(tzinfo=timezone.utc).timestamp()
+            end_timestamp = start_timestamp + 86400
+            
+            if duty_category == 'signal_review':
+                # Check if signals were submitted
+                submitted = self.db['signal_suggestions'].count_documents({
+                    'created_at': {'$gte': start_timestamp, '$lt': end_timestamp}
+                })
+                return submitted > 0
+            
+            elif duty_category == 'broadcast_approval':
+                # Check if broadcasts needed approval
+                submitted = self.db['broadcast_approvals'].count_documents({
+                    'created_at': {'$gte': start_timestamp, '$lt': end_timestamp}
+                })
+                return submitted > 0
+            
+            # Other categories always have work (engagement, content, etc.)
+            return True
+        except Exception as e:
+            logger.error(f"Error checking work existence: {e}")
+            return True # Default to True to be safe
+
+    def auto_complete_duties_with_no_work(self) -> Dict[str, Dict]:
+        """
+        At day's end, handle incomplete duties:
+        1. Auto-complete if NO work existed
+        2. Auto-complete if work was done by ANOTHER admin (collaborative credit)
+        3. Leave incomplete if work existed but wasn't done
+        """
+        date_key = self.get_date_key()
+        
+        incomplete_duties = list(self.admin_duties_collection.find({
+            'date': date_key,
+            'completed': False
+        }))
+        
+        results = {
+            'auto_completed_no_work': {},
+            'auto_completed_covered': {},
+            'left_incomplete': {}
+        }
+        
+        for duty in incomplete_duties:
+            duty_category = duty['duty_category']
+            admin_id = duty['admin_id']
+            admin_name = duty['admin_name']
+            
+            # Check if work existed
+            had_work = self._check_if_work_existed(duty_category, date_key)
+            
+            if not had_work:
+                # No work existed - auto-complete with full credit
+                self.admin_duties_collection.update_one(
+                    {'_id': duty['_id']},
+                    {
+                        '$set': {
+                            'completed': True,
+                            'auto_completed': True,
+                            'auto_reason': 'no_work',
+                            'completed_at': time.time(),
+                            'completion_notes': 'Auto-completed: No work available today'
+                        }
+                    }
+                )
+                results['auto_completed_no_work'].setdefault(duty_category, []).append(admin_name)
+            
+            else:
+                # Work existed - check if another admin handled it
+                action_count = duty.get('action_count', 0)
+                
+                if action_count > 0:
+                    # Work was done (by this admin or others) - give collaborative credit
+                    self.admin_duties_collection.update_one(
+                        {'_id': duty['_id']},
+                        {
+                            '$set': {
+                                'completed': True,
+                                'auto_completed': True,
+                                'auto_reason': 'covered_by_team',
+                                'completed_at': time.time(),
+                                'completion_notes': f'Auto-completed: Work handled by team ({action_count} actions)'
+                            }
+                        }
+                    )
+                    results['auto_completed_covered'].setdefault(duty_category, []).append(f"{admin_name} (covered by team)")
+                
+                else:
+                    results['left_incomplete'].setdefault(duty_category, []).append(admin_name)
+        
+        return results
+
+    def get_completion_stats(self, days: int = 7) -> List[Dict]:
+        """Get duty completion statistics with auto-complete breakdown"""
+        start_date = (datetime.now(timezone.utc) - timedelta(days=days)).strftime('%Y-%m-%d')
+        
+        pipeline = [
+            {'$match': {'date': {'$gte': start_date}}},
+            {
+                '$group': {
+                    '_id': '$admin_id',
+                    'admin_name': {'$first': '$admin_name'},
+                    'total_duties': {'$sum': 1},
+                    'completed_duties': {
+                        '$sum': {'$cond': [{'$eq': ['$completed', True]}, 1, 0]}
+                    },
+                    # Count manually completed
+                    'manual_completed': {
+                        '$sum': {'$cond': [
+                            {'$and': [
+                                {'$eq': ['$completed', True]},
+                                {'$ne': ['$auto_completed', True]}
+                            ]}, 1, 0
+                        ]}
+                    },
+                    'auto_completed': {
+                        '$sum': {'$cond': [{'$eq': ['$auto_completed', True]}, 1, 0]}
+                    }
+                }
+            },
+            {
+                '$project': {
+                    'admin_id': '$_id',
+                    'admin_name': 1,
+                    'total_duties': 1,
+                    'completed_duties': 1,
+                    'manual_completed': 1,
+                    'auto_completed': 1,
+                    'completion_rate': {
+                        '$multiply': [
+                            {'$divide': ['$completed_duties', {'$max': ['$total_duties', 1]}]},
+                            100
+                        ]
+                    }
+                }
+            },
+            {'$sort': {'completion_rate': -1}}
+        ]
+        
+        results = list(self.admin_duties_collection.aggregate(pipeline))
+        return results
     
     def get_date_key(self) -> str:
         """Get today's date as a key"""
