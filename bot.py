@@ -5213,72 +5213,51 @@ class BroadcastBot:
             conversation_timeout=300 # 5 minutes to rate
         )
 
-       # Basic commands (REPLACE start and help)
-        application.add_handler(CommandHandler("start", self.start_v2)) # <-- MODIFIED
-        application.add_handler(CommandHandler("help", self.help_command_v2)) # <-- MODIFIED
-        application.add_handler(CallbackQueryHandler(self.handle_help_callbacks, pattern="^help_")) # <-- NEW
+        application.add_handler(CommandHandler("start", self.start_v2)) 
+        application.add_handler(CommandHandler("help", self.help_command_v2)) 
+        application.add_handler(CallbackQueryHandler(self.handle_help_callbacks, pattern="^help_")) 
         application.add_handler(CallbackQueryHandler(self.check_joined_callback, pattern="^check_joined$"))
         application.add_handler(CommandHandler("unsubscribe", self.unsubscribe))
         application.add_handler(CommandHandler("add", self.add_subscriber_command))
         application.add_handler(CommandHandler("stats", self.stats))
         application.add_handler(CommandHandler("subscribers", self.list_subscribers))
-
-        # Approval system
         application.add_handler(CommandHandler("approvals", self.list_approvals))
         application.add_handler(CommandHandler("signals", self.list_signal_suggestions))
         application.add_handler(CallbackQueryHandler(self.handle_approval_review, pattern="^app_"))
-        application.add_handler(signal_review_handler) # (Existing)
-
-        # Admin management
+        application.add_handler(signal_review_handler)
         application.add_handler(add_admin_handler)
         application.add_handler(CommandHandler("removeadmin", self.remove_admin_command))
         application.add_handler(CommandHandler("admins", self.list_admins))
         application.add_handler(CommandHandler("logs", self.view_logs))
         application.add_handler(CommandHandler("mystats", self.my_stats))
-
-        # --- NEW: Marketing & UX Commands ---
-        application.add_handler(CommandHandler("performance", self.show_performance_command)) # <-- NEW
-        application.add_handler(CommandHandler("referral", self.show_referral_command)) # <-- NEW
-        application.add_handler(CommandHandler("testimonials", show_testimonials_command)) # <-- NEW
-        application.add_handler(CommandHandler("myprogress", self.my_progress_command)) # <-- NEW
-        application.add_handler(CommandHandler("settings", self.settings_command)) # <-- NEW
-        application.add_handler(CallbackQueryHandler(self.handle_settings_callback, pattern="^toggle_")) # <-- NEW
-        application.add_handler(CallbackQueryHandler(self.handle_settings_callback, pattern="^close_settings$")) # <-- NEW
+        application.add_handler(CallbackQueryHandler(self.handle_template_callback, pattern="^tpl_"))
+        application.add_handler(CallbackQueryHandler(self.list_templates_callback, pattern="^tpl_list_all$"))
+        application.add_handler(CommandHandler("performance", self.show_performance_command))
+        application.add_handler(CommandHandler("referral", self.show_referral_command))
+        application.add_handler(CommandHandler("testimonials", show_testimonials_command)) 
+        application.add_handler(CommandHandler("myprogress", self.my_progress_command)) 
+        application.add_handler(CommandHandler("settings", self.settings_command)) 
+        application.add_handler(CallbackQueryHandler(self.handle_settings_callback, pattern="^toggle_")) 
+        application.add_handler(CallbackQueryHandler(self.handle_settings_callback, pattern="^close_settings$")) 
         application.add_handler(CallbackQueryHandler(self.admin_button_handler, pattern='^admin_'))
-
-        # --- Forex Toolkit Handlers (REPLACE pips) ---
         application.add_handler(CommandHandler("news", self.news))
         application.add_handler(CommandHandler("calendar", self.calendar))
-        application.add_handler(CommandHandler("pips", self.pips_calculator_v2)) # <-- MODIFIED
+        application.add_handler(CommandHandler("pips", self.pips_calculator_v2)) 
         application.add_handler(CommandHandler("positionsize", self.position_size_calculator))
-        application.add_handler(CommandHandler("bestschedule", self.suggest_broadcast_time)) # <-- NEW
-
-        # Educational content management
+        application.add_handler(CommandHandler("bestschedule", self.suggest_broadcast_time)) 
         application.add_handler(CommandHandler("synceducation", self.sync_educational_content))
         application.add_handler(CommandHandler("previeweducation", self.preview_educational_content))
-        # ----------------------------
-
-        # Admin duty management
         application.add_handler(CommandHandler("myduty", self.my_duty_command))
         application.add_handler(CommandHandler("dutycomplete", self.duty_complete_command))
         application.add_handler(CommandHandler("dutystats", self.duty_stats_command))
-        #
-        
-        # Templates
         application.add_handler(CommandHandler("templates", self.list_templates))
         application.add_handler(template_handler)
-
-        # Broadcasts
         application.add_handler(broadcast_handler)
         application.add_handler(schedule_handler)
         application.add_handler(CommandHandler("scheduled", self.list_scheduled))
         application.add_handler(CommandHandler("cancel_scheduled", self.cancel_scheduled_command))
-
-        # Signal suggestions
         application.add_handler(signal_handler)
         application.add_handler(CallbackQueryHandler(self.handle_force_submit, pattern="^(force_submit_text|force_submit_photo|cancel_signal)$"))
-
-        # Subscription and VIP request handling
         application.add_handler(subscribe_handler)
         application.add_handler(vip_request_handler)
         application.add_handler(
@@ -5289,8 +5268,6 @@ class BroadcastBot:
         )
 
         if self.edu_content_manager:
-            # 1. Listen for NEW posts in the channel
-            # Ensure your .env EDUCATION_CHANNEL_ID matches the channel ID exactly (e.g., -100...)
             try:
                 channel_id_int = int(self.edu_content_manager.channel_id)
                 application.add_handler(
