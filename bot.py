@@ -6487,7 +6487,7 @@ class BroadcastBot:
         logger.info(f"Daily educational content sent: {success} success, {failed} failed")
         content = await self.edu_content_manager.get_random_content()
         if content:
-            await self.twitter.post_daily_tip(content)
+            await self.twitter.post_daily_tip(context, content)
 
     async def post_weekly_performance_to_twitter(self, context: ContextTypes.DEFAULT_TYPE):
         """Job: Weekly transparency post on Twitter"""
