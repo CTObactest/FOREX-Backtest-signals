@@ -2386,7 +2386,66 @@ class BroadcastBot:
             "CR8047034", "CR8052255", "CR7380411", "CR7707424", "CR8581785", "CR8644473",
             "CR8648274", "CR8661054",
         }
-    # [Location: Inside BroadcastBot class, after __init__]
+
+    async def end_of_day_duty_verification_job(self, context: ContextTypes.DEFAULT_TYPE):
+        """Runs at 23:55 UTC to auto-complete duties and send summary."""
+        try:
+            logger.info("Running end-of-day duty verification...")
+            
+            results = self.admin_duty_manager.auto_complete_duties_with_no_work()
+            
+            # Build comprehensive summary
+            summary = "🤖 <b>End-of-Day Duty Report</b>\n"
+            summary += f"Date: {datetime.now(timezone.utc).strftime('%Y-%m-%d')}\n\n"
+            
+            # No work available
+            if results['auto_completed_no_work']:
+                summary += "✅ <b>Auto-Completed (No Work):</b>\n"
+                for category, admins in results['auto_completed_no_work'].items():
+                    duty_name = self.admin_duty_manager.DUTY_CATEGORIES[category]['emoji']
+                    summary += f"{duty_name} {category.replace('_', ' ').title()}:\n"
+                    for admin in admins:
+                        summary += f"  • {admin}\n"
+                summary += "\n"
+            
+            # Covered by team
+            if results['auto_completed_covered']:
+                summary += "🤝 <b>Auto-Completed (Team Coverage):</b>\n"
+                for category, admins in results['auto_completed_covered'].items():
+                    duty_name = self.admin_duty_manager.DUTY_CATEGORIES[category]['emoji']
+                    summary += f"{duty_name} {category.replace('_', ' ').title()}:\n"
+                    for admin in admins:
+                        summary += f"  • {admin}\n"
+                summary += "\n"
+            
+            # Incomplete (performance issue)
+            if results['left_incomplete']:
+                summary += "⚠️ <b>Incomplete (Work Not Done):</b>\n"
+                for category, admins in results['left_incomplete'].items():
+                    duty_name = self.admin_duty_manager.DUTY_CATEGORIES[category]['emoji']
+                    summary += f"{duty_name} {category.replace('_', ' ').title()}:\n"
+                    for admin in admins:
+                        summary += f"  • {admin} ❌\n"
+                summary += "\n"
+            
+            if not any(results.values()):
+                summary += "✅ All duties completed manually. Great work team!\n"
+            
+            summary += "\n<i>Use /dutystats for detailed analytics</i>"
+            
+            # Notify super admins
+            for super_admin_id in self.super_admin_ids:
+                try:
+                    await context.bot.send_message(
+                        chat_id=super_admin_id,
+                        text=summary,
+                        parse_mode=ParseMode.HTML
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to send end-of-day summary to {super_admin_id}: {e}")
+            
+        except Exception as e:
+            logger.error(f"Error in end_of_day_duty_verification_job: {e}")
 
     async def is_user_subscribed(self, user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
         """Check if a user is subscribed to the force-sub channel"""
