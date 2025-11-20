@@ -3560,7 +3560,6 @@ class BroadcastBot:
             return ConversationHandler.END
 
         if action == "approve":
-            # Store suggestion ID and ask for rating
             context.user_data['suggestion_to_rate'] = suggestion_id
             keyboard = [
                 [
@@ -3588,22 +3587,31 @@ class BroadcastBot:
                 )
             
             return WAITING_SIGNAL_RATING
-            # ...
+           
 
         elif action == "reject":
             context.user_data['suggestion_to_reject'] = suggestion_id
             
-            new_prompt = "Please provide a reason for rejecting this signal:"
+            new_prompt = "Please provide a reason for rejecting this signal:\n\nSelect a quick reason below or type a custom one:"
+            
+            keyboard = [
+                [InlineKeyboardButton("📉 Poor Quality", callback_data="reason_Poor quality or unclear")],
+                [InlineKeyboardButton("❓ Not Enough Context", callback_data="reason_Not enough context/reasoning provided")],
+                [InlineKeyboardButton("⚠️ High Risk", callback_data="reason_Signal considered too high risk")],
+                [InlineKeyboardButton("❌ Invalid Format", callback_data="reason_Invalid signal format")],
+                [InlineKeyboardButton("🔄 Unclear chart", callback_data="reason_Show clean and well design chart for your signal")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
             
             if query.message.text:
                 await query.edit_message_text(
                     text=new_prompt,
-                    reply_markup=None # Remove buttons
+                    reply_markup=reply_markup
                 )
             elif query.message.caption:
                 await query.edit_message_caption(
                     caption=new_prompt,
-                    reply_markup=None # Remove buttons
+                    reply_markup=reply_markup
                 )
             
             return WAITING_SIGNAL_REJECTION_REASON
@@ -3697,14 +3705,50 @@ class BroadcastBot:
         await update.message.reply_text(f"❌ Signal rejected and reason recorded.")
         return ConversationHandler.END
 
+    async def handle_quick_rejection_reason(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle quick rejection reason buttons"""
+        query = update.callback_query
+        await query.answer()
+        
+        reason = query.data.replace("reason_", "")
+        suggestion_id = context.user_data.pop('suggestion_to_reject', None)
+        admin_user = update.effective_user
+
+        if not suggestion_id:
+            await query.edit_message_text("❌ Error: Suggestion ID not found. Please try again.")
+            return ConversationHandler.END
+
+        suggestion = self.db.get_suggestion_by_id(suggestion_id)
+        if not suggestion:
+            await query.edit_message_text("❌ Error: Suggestion not found.")
+            return ConversationHandler.END
+
+        self.db.update_suggestion_status(
+            suggestion_id, 
+            'rejected', 
+            admin_user.id, 
+            reason=reason
+        )
+        self.admin_duty_manager.credit_duty_for_action(update.effective_user.id, 'signal_rejected')
+
+        try:
+            await context.bot.send_message(
+                chat_id=suggestion['suggested_by'],
+                text=f"❌ Your signal suggestion was not approved.\n\nReason: {reason}"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to notify suggester {suggestion['suggested_by']} of rejection: {e}")
+
+        await query.edit_message_text(f"❌ Signal rejected.\nReason: {reason}")
+        return ConversationHandler.END
+
     async def broadcast_signal(self, context: ContextTypes.DEFAULT_TYPE, suggestion: Dict):
         """Broadcast approved signal to all users"""
         target_users = self.db.get_all_users()
         message_data = suggestion['message_data']
         suggester = suggestion['suggester_name']
-        rating = suggestion.get('rating') # Get the rating
+        rating = suggestion.get('rating')
 
-        # Add attribution to message
         attribution = f"\n\n💡 Signal suggested by: {suggester}"
         if rating:
             attribution += f"\n⭐ Admin Rating: {'⭐' * rating}"
