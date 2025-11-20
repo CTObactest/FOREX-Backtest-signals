@@ -1635,16 +1635,25 @@ class EducationalContentManager:
         success = 0
         failed = 0
         
+        # Define the footer
+        footer = "\n\n🔕 Disable: /settings then toggle off Daily Tips"
+        
         for user_id in target_users:
             try:
                 if content['type'] == 'text':
-                    await context.bot.send_message(chat_id=user_id, text=content['content'])
+                    # Append footer to text
+                    text_to_send = content['content'] + footer
+                    await context.bot.send_message(chat_id=user_id, text=text_to_send)
                 elif content['type'] == 'photo':
-                    await context.bot.send_photo(chat_id=user_id, photo=content['file_id'], caption=content.get('caption'))
+                    # Append footer to caption
+                    caption_to_send = (content.get('caption') or '') + footer
+                    await context.bot.send_photo(chat_id=user_id, photo=content['file_id'], caption=caption_to_send)
                 elif content['type'] == 'video':
-                    await context.bot.send_video(chat_id=user_id, video=content['file_id'], caption=content.get('caption'))
+                    caption_to_send = (content.get('caption') or '') + footer
+                    await context.bot.send_video(chat_id=user_id, video=content['file_id'], caption=caption_to_send)
                 elif content['type'] == 'document':
-                    await context.bot.send_document(chat_id=user_id, document=content['file_id'], caption=content.get('caption'))
+                    caption_to_send = (content.get('caption') or '') + footer
+                    await context.bot.send_document(chat_id=user_id, document=content['file_id'], caption=caption_to_send)
                 success += 1
             except:
                 failed += 1
