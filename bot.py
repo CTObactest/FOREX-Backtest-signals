@@ -5056,7 +5056,10 @@ class BroadcastBot:
 
         # Broadcast handler
         broadcast_handler = ConversationHandler(
-            entry_points=[CommandHandler("broadcast", self.start_broadcast)],
+            entry_points=[
+                CommandHandler("broadcast", self.start_broadcast),
+                CallbackQueryHandler(self.handle_template_callback, pattern="^tpl_use_")
+            ],
             states={
                 WAITING_MESSAGE: [
                     MessageHandler(filters.ALL & ~filters.COMMAND, self.receive_broadcast_message)
@@ -5071,7 +5074,7 @@ class BroadcastBot:
                 ],
                 WAITING_TARGET: [
                     CallbackQueryHandler(self.handle_target_choice, pattern="^target_")
-                ]
+                ],
             },
             fallbacks=[CommandHandler("cancel", self.cancel_broadcast)]
         )
