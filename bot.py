@@ -2884,6 +2884,93 @@ class BroadcastBot:
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
+
+    async def handle_template_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle template menu actions (View, Delete, Use)"""
+        query = update.callback_query
+        await query.answer()
+        
+        data = query.data
+        action, template_id = data.split('_', 2)[1:] # e.g., tpl_view_12345
+        
+        template = self.db.get_template(template_id)
+        
+        if not template and action != "del": # Allow delete confirmation to pass even if deleted
+            await query.edit_message_text("❌ Template not found. It may have been deleted.")
+            return
+
+        if action == "view":
+            # PREVIEW THE TEMPLATE
+            msg_data = template['message_data']
+            content_preview = " [Media Content]"
+            if msg_data['type'] == 'text':
+                content_preview = msg_data['content'][:100] + "..." if len(msg_data['content']) > 100 else msg_data['content']
+            elif 'caption' in msg_data and msg_data['caption']:
+                content_preview = msg_data['caption'][:100] + "..."
+            
+            text = (
+                f"📝 <b>Template Details</b>\n\n"
+                f"<b>Name:</b> {template['name']}\n"
+                f"<b>Category:</b> {template.get('category', 'None')}\n"
+                f"<b>Type:</b> {msg_data['type'].upper()}\n"
+                f"<b>Preview:</b> {content_preview}\n\n"
+                f"Select an action:"
+            )
+            
+            keyboard = [
+                [InlineKeyboardButton("📢 Broadcast This", callback_data=f"tpl_use_{template_id}")],
+                [InlineKeyboardButton("🗑️ Delete", callback_data=f"tpl_del_{template_id}")],
+                [InlineKeyboardButton("🔙 Back to List", callback_data="tpl_list_all")]
+            ]
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
+            
+        elif action == "del":
+            # DELETE THE TEMPLATE
+            if self.db.delete_template(template_id, query.from_user.id):
+                await query.answer("Template deleted!", show_alert=True)
+                # Refresh list
+                await self.list_templates_callback(update, context)
+            else:
+                await query.answer("Failed to delete.", show_alert=True)
+
+        elif action == "use":
+            # LOAD TEMPLATE INTO BROADCAST FLOW
+            context.user_data.clear()
+            
+            # Load the message data directly from template
+            context.user_data['ready_message_data'] = template['message_data']
+            context.user_data['template_name'] = template['name']
+            
+            # Increment usage count
+            self.db.increment_template_usage(template_id)
+            
+            # Skip straight to Target Audience selection
+            await self.ask_target_audience(query, context, scheduled=False)
+            
+            # IMPORTANT: We need to manually set the state for ConversationHandler
+            # This requires a trick because we are outside the ConversationHandler flow usually.
+            # See Step 4 for how we fix the state handling.
+            return WAITING_TARGET
+
+    async def list_templates_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Helper to show list via callback (for 'Back' button)"""
+        templates = self.db.get_all_templates()
+        if not templates:
+            await update.callback_query.edit_message_text("📝 No templates found.")
+            return
+
+        keyboard = []
+        for t in templates:
+            btn_text = f"{t['name']} ({t.get('category', 'General')})"
+            keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"tpl_view_{t['_id']}")])
+        
+        keyboard.append([InlineKeyboardButton("❌ Close", callback_data="close_settings")])
+        await update.callback_query.edit_message_text(
+            "📝 <b>Template Manager</b>\nSelect a template:", 
+            reply_markup=InlineKeyboardMarkup(keyboard), 
+            parse_mode=ParseMode.HTML
+        )
+
     async def unsubscribe(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /unsubscribe command"""
         user_id = update.effective_user.id
