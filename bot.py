@@ -2226,15 +2226,14 @@ class TwitterIntegration:
         else:
             content = message_data.get('caption') or "New Signal Alert"
         
-        # Truncate if needed
-        max_length = 200  # Leave room for attribution
+        max_length = 200 
         if len(content) > max_length:
             content = content[:max_length] + "..."
         
         stars = "⭐" * rating if rating else ""
         
-        tweet = f"💡 Trading Signal {stars}\n\n{content}\n\n🤖 Verified by PipSage"
-        return tweet[:280]  # Twitter limit
+        tweet = f"💡 Trading Signal {stars}\n\n{content}\n\n👤 Signal by: {suggester}"
+        return tweet[:280] 
     
     async def post_daily_tip(self, content: Dict) -> Optional[str]:
         """Post educational content"""
