@@ -5176,6 +5176,9 @@ class BroadcastBot:
                 CallbackQueryHandler(self.handle_template_callback, pattern="^tpl_use_")
             ],
             states={
+                WAITING_INITIAL_PLATFORM: [
+                    CallbackQueryHandler(self.handle_initial_platform_choice, pattern="^platform_")
+                ],
                 WAITING_MESSAGE: [
                     MessageHandler(filters.ALL & ~filters.COMMAND, self.receive_broadcast_message)
                 ],
@@ -5189,9 +5192,6 @@ class BroadcastBot:
                 ],
                 WAITING_TARGET: [
                     CallbackQueryHandler(self.handle_target_choice, pattern="^target_")
-                ],
-                WAITING_PLATFORM: [
-                    CallbackQueryHandler(self.handle_platform_choice, pattern="^platform_")
                 ]
             },
             fallbacks=[CommandHandler("cancel", self.cancel_broadcast)]
