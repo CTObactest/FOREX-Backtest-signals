@@ -4382,6 +4382,7 @@ class BroadcastBot:
             "• Explain your analysis\n\n"
             "Use /suggestsignal to contribute!"
         )
+        message += "\n\n🔕 Disable: /settings then toggle off Leaderboards"
         
         # Send to all users who have not opted out
         target_users = self.db.get_all_users()
