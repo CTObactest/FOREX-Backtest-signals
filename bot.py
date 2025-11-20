@@ -2178,6 +2178,11 @@ class TwitterIntegration:
                 text_content = message_data.get('caption') or ""
                 if message_data.get('file_id'):
                     media_ids = await self._upload_telegram_photo(context, message_data['file_id'])
+
+            elif message_data['type'] == 'video':
+                text_content = message_data.get('caption') or ""
+                if message_data.get('file_id'):
+                    media_ids = await self._upload_telegram_video(context, message_data['file_id'])
             
             if len(text_content) > 280:
                 text_content = text_content[:277] + "..."
@@ -2209,6 +2214,25 @@ class TwitterIntegration:
             return [media.media_id]
         except Exception as e:
             logger.error(f"Error uploading photo to Twitter: {e}")
+            return []
+
+    async def _upload_telegram_video(self, context, file_id):
+        """Download video from Telegram and upload to Twitter"""
+        try:
+            new_file = await context.bot.get_file(file_id)
+            bio = io.BytesIO()
+            await new_file.download_to_memory(bio)
+            bio.seek(0)
+            
+            media = self.api.media_upload(
+                filename="video.mp4", 
+                file=bio, 
+                media_category='tweet_video'
+            )
+            
+            return [media.media_id]
+        except Exception as e:
+            logger.error(f"Error uploading video to Twitter: {e}")
             return []
 
     async def post_signal(self, context, suggestion: Dict) -> Optional[str]:
