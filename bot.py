@@ -3672,6 +3672,7 @@ class BroadcastBot:
         if action == "approve":
             # Update status
             self.db.update_approval_status(approval_id, 'approved', query.from_user.id)
+            self.admin_duty_manager.credit_duty_for_action(query.from_user.id, 'broadcast_approved')
 
             # Execute broadcast
             await self.execute_approved_broadcast(context, approval, query.from_user.id)
@@ -3690,6 +3691,7 @@ class BroadcastBot:
 
         elif action == "reject":
             self.db.update_approval_status(approval_id, 'rejected', query.from_user.id)
+            self.admin_duty_manager.credit_duty_for_action(query.from_user.id, 'broadcast_rejected')
 
             # Notify creator
             try:
