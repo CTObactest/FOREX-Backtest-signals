@@ -4027,19 +4027,26 @@ class BroadcastBot:
         logger.info(f"Approved broadcast sent: {success_count} success, {failed_count} failed")
         
     async def start_broadcast(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Start broadcast conversation"""
+        """Start broadcast conversation - NOW ASKS PLATFORM FIRST"""
         if not self.has_permission(update.effective_user.id, Permission.BROADCAST):
             await update.message.reply_text("❌ You don't have permission to use this command.")
             return ConversationHandler.END
 
+        keyboard = [
+            [InlineKeyboardButton("✈️ Telegram Only", callback_data="platform_telegram")],
+            [InlineKeyboardButton("🐦 Twitter Only", callback_data="platform_twitter")],
+            [InlineKeyboardButton("🚀 Both Platforms", callback_data="platform_both")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
         await update.message.reply_text(
-            "📢 Start Broadcasting\n\n"
-            "Send me the message to broadcast.\n"
-            "You can send text, photos, videos, or documents.\n\n"
-            "Send /cancel to cancel."
+            "📢 <b>Start Broadcasting</b>\n\n"
+            "Select the platform(s) for this broadcast:",
+            reply_markup=reply_markup,
+            parse_mode=ParseMode.HTML
         )
         context.user_data.clear()
-        return WAITING_MESSAGE
+        return WAITING_INITIAL_PLATFORM
 
     async def schedule_broadcast_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Start scheduled broadcast conversation"""
@@ -4058,10 +4065,30 @@ class BroadcastBot:
         context.user_data['scheduled'] = True 
         return WAITING_MESSAGE
 
-    async def receive_broadcast_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Receive broadcast message and ask for next step"""
-        context.user_data['broadcast_message'] = update.message
+    async def handle_initial_platform_choice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle the initial platform selection"""
+        query = update.callback_query
+        await query.answer()
+        
+        platform = query.data
+        context.user_data['platform'] = platform
+        
+        if platform == 'platform_twitter':
+            context.user_data['target'] = 'all'
 
+        await query.edit_message_text(
+            f"✅ Platform set to: {platform.replace('platform_', '').title()}\n\n"
+            "<b>Send me the message to broadcast.</b>\n"
+            "You can send text, photos, videos, or documents.\n\n"
+            "Send /cancel to cancel.",
+            parse_mode=ParseMode.HTML
+        )
+        return WAITING_MESSAGE
+
+    async def receive_broadcast_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Receive broadcast message and route based on platform"""
+        context.user_data['broadcast_message'] = update.message
+        platform = context.user_data.get('platform', 'platform_telegram')
         if update.message.photo:
             keyboard = [
                 [
@@ -4072,6 +4099,9 @@ class BroadcastBot:
             reply_markup = InlineKeyboardMarkup(keyboard)
             await update.message.reply_text("Add a watermark to the image?", reply_markup=reply_markup)
             return WAITING_BUTTONS
+
+        if platform == 'platform_twitter':
+            return await self.prepare_and_submit_broadcast(update, context)
 
         keyboard = [
             [
@@ -4085,12 +4115,13 @@ class BroadcastBot:
         return WAITING_BUTTONS
         
     async def handle_watermark_choice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle watermark choice"""
+        """Handle watermark choice and route based on platform"""
         query = update.callback_query
         await query.answer()
 
         use_watermark = query.data == "watermark_yes"
         context.user_data['use_watermark'] = use_watermark
+        platform = context.user_data.get('platform', 'platform_telegram')
 
         if use_watermark:
             await query.edit_message_text("Watermarking image...")
@@ -4102,6 +4133,9 @@ class BroadcastBot:
             
             context.user_data['watermarked_image'] = watermarked_image
 
+        if platform == 'platform_twitter':
+             return await self.prepare_and_submit_broadcast(update, context)
+
         keyboard = [
             [
                 InlineKeyboardButton("➕ Add Buttons", callback_data="add_buttons"),
@@ -4109,8 +4143,16 @@ class BroadcastBot:
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text("Do you want to add inline buttons to your message?",
-                                      reply_markup=reply_markup)
+        
+        if use_watermark:
+             await context.bot.send_message(
+                 chat_id=query.message.chat_id,
+                 text="Do you want to add inline buttons to your message?",
+                 reply_markup=reply_markup
+             )
+        else:
+             await query.edit_message_text("Do you want to add inline buttons to your message?",
+                                          reply_markup=reply_markup)
         return WAITING_BUTTONS
         
     async def handle_buttons_choice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -4209,11 +4251,9 @@ class BroadcastBot:
         return WAITING_TARGET
 
     async def handle_target_choice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle target audience choice, prepare message data, and ask for platform"""
+        """Handle target choice and FINISH (Telegram/Both path)"""
         query = update.callback_query
         await query.answer()
-        user_id = query.from_user.id
-        
         if 'scheduled_time' in context.user_data:
             return await self.finalize_scheduled_broadcast(update, context)
 
@@ -4223,71 +4263,147 @@ class BroadcastBot:
             'target_nonsubscribers': 'nonsubscribers',
             'target_admins': 'admins'
         }
-        selected_target = target_map.get(query.data, 'all')
+        context.user_data['target'] = target_map.get(query.data, 'all')
         
-        context.user_data['target'] = selected_target
-        
-        if 'ready_message_data' in context.user_data:
-            message_data = context.user_data['ready_message_data']
-            
+        return await self.prepare_and_submit_broadcast(update, context)
+
+    async def prepare_and_submit_broadcast(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Consolidated logic to construct the message data and execute/submit for approval.
+        Called by:
+        1. receive_broadcast_message (if Twitter only + text)
+        2. handle_watermark_choice (if Twitter only + photo)
+        3. handle_target_choice (if Telegram/Both)
+        """
+        if hasattr(update, 'callback_query') and update.callback_query:
+            user_id = update.callback_query.from_user.id
+            message_obj = update.callback_query.message
+            is_callback = True
         else:
-            broadcast_message = context.user_data.get('broadcast_message')
-            if not broadcast_message:
-                await query.edit_message_text("❌ Error: No message found. Please restart.")
-                return ConversationHandler.END
+            user_id = update.effective_user.id
+            message_obj = update.message
+            is_callback = False
 
-            inline_buttons = context.user_data.get('inline_buttons')
-            protect_content = context.user_data.get('protect_content', False)
-            use_watermark = context.user_data.get('use_watermark', False)
-            watermarked_image = context.user_data.get('watermarked_image')
+        broadcast_message = context.user_data.get('broadcast_message')
+        if not broadcast_message:
+            msg = "❌ Error: No message found. Please restart."
+            if is_callback: await update.callback_query.edit_message_text(msg)
+            else: await update.message.reply_text(msg)
+            return ConversationHandler.END
+            
+        inline_buttons = context.user_data.get('inline_buttons')
+        protect_content = context.user_data.get('protect_content', False)
+        use_watermark = context.user_data.get('use_watermark', False)
+        watermarked_image = context.user_data.get('watermarked_image')
+        target = context.user_data.get('target', 'all')
+        platform = context.user_data.get('platform', 'platform_telegram')
+        message_data = {
+            'type': 'text',
+            'content': None,
+            'inline_buttons': inline_buttons,
+            'protect_content': protect_content
+        }
 
-            message_data = {
-                'type': 'text',
-                'content': None,
-                'inline_buttons': inline_buttons,
-                'protect_content': protect_content
-            }
-
-            if broadcast_message.text:
-                message_data['type'] = 'text'
-                message_data['content'] = broadcast_message.text
-            elif broadcast_message.photo:
-                message_data['type'] = 'photo'
-                if use_watermark and watermarked_image:
-                    try:
-                        sent_photo = await context.bot.send_photo(
-                            chat_id=user_id,
-                            photo=watermarked_image,
-                            caption="Generating file_id..."
-                        )
-                        message_data['file_id'] = sent_photo.photo[-1].file_id
-                        await sent_photo.delete() 
-                    except Exception as e:
-                        logger.error(f"Failed to send/delete watermarked photo: {e}")
-                        message_data['file_id'] = broadcast_message.photo[-1].file_id # Fallback
-                else:
+        if broadcast_message.text:
+            message_data['type'] = 'text'
+            message_data['content'] = broadcast_message.text
+        elif broadcast_message.photo:
+            message_data['type'] = 'photo'
+            if use_watermark and watermarked_image:
+                try:
+                    sent_photo = await context.bot.send_photo(
+                        chat_id=user_id,
+                        photo=watermarked_image,
+                        caption="Generating file_id..."
+                    )
+                    message_data['file_id'] = sent_photo.photo[-1].file_id
+                    await sent_photo.delete() 
+                except Exception as e:
+                    logger.error(f"Failed to send/delete watermarked photo: {e}")
                     message_data['file_id'] = broadcast_message.photo[-1].file_id
-                
-                message_data['caption'] = broadcast_message.caption
-            elif broadcast_message.video:
-                message_data['type'] = 'video'
-                message_data['file_id'] = broadcast_message.video.file_id
-                message_data['caption'] = broadcast_message.caption
-            elif broadcast_message.document:
-                message_data['type'] = 'document'
-                message_data['file_id'] = broadcast_message.document.file_id
-                message_data['caption'] = broadcast_message.caption
+            else:
+                message_data['file_id'] = broadcast_message.photo[-1].file_id
+            
+            message_data['caption'] = broadcast_message.caption
+        elif broadcast_message.video:
+            message_data['type'] = 'video'
+            message_data['file_id'] = broadcast_message.video.file_id
+            message_data['caption'] = broadcast_message.caption
+        elif broadcast_message.document:
+            message_data['type'] = 'document'
+            message_data['file_id'] = broadcast_message.document.file_id
+            message_data['caption'] = broadcast_message.caption
 
         context.user_data['ready_message_data'] = message_data
         
         is_quality, issues = BroadcastQualityChecker.check_broadcast_quality(message_data)
         if not is_quality:
             issues_text = "\n".join([f"• {issue}" for issue in issues])
-            await query.edit_message_text(
-                f"❌ Broadcast Quality Check Failed:\n\n{issues_text}\n\n"
-                "Please /cancel and try again."
-            )
+            msg = f"❌ Broadcast Quality Check Failed:\n\n{issues_text}\n\nPlease /cancel and try again."
+            if is_callback: await update.callback_query.edit_message_text(msg)
+            else: await update.message.reply_text(msg)
             return ConversationHandler.END
+            
+        can_send, reason = await self.broadcast_limiter.can_broadcast(user_id)
+        if not can_send:
+            if is_callback: await update.callback_query.edit_message_text(reason)
+            else: await update.message.reply_text(reason)
+            return ConversationHandler.END
+            
+        if self.needs_approval(user_id):
+            creator_name = (update.effective_user.first_name or update.effective_user.username or str(user_id))
+            approval_id = self.db.create_broadcast_approval(
+                message_data,
+                user_id,
+                creator_name,
+                target
+            )
+
+            if approval_id:
+                self.db.log_activity(user_id, 'broadcast_submitted', {'approval_id': approval_id})
+                msg = (
+                    "⏳ Broadcast submitted for approval!\n\n"
+                    "Moderators/Super Admins will review your broadcast.\n"
+                    "You'll be notified when it's reviewed."
+                )
+                if is_callback: await update.callback_query.edit_message_text(msg)
+                else: await update.message.reply_text(msg)
+                await self.notify_approvers_new_broadcast(context, approval_id)
+            else:
+                msg = "❌ Failed to submit broadcast. Please try again."
+                if is_callback: await update.callback_query.edit_message_text(msg)
+                else: await update.message.reply_text(msg)
+
+            return ConversationHandler.END
+
+        status_msg = "🚀 Broadcasting started...\n"
+        if platform == 'platform_twitter':
+             status_msg += "• Posting to Twitter...\n"
+        elif platform == 'platform_telegram':
+             status_msg += "• Sending to Telegram users...\n"
+        else:
+             status_msg += "• Sending to Telegram & Twitter...\n"
+
+        if is_callback: await update.callback_query.edit_message_text(status_msg)
+        else: await update.message.reply_text(status_msg)
+
+        if platform in ['platform_telegram', 'platform_both']:
+            dummy_approval = {
+                '_id': 'DIRECT',
+                'message_data': message_data,
+                'target': target,
+                'created_by': user_id
+            }
+            await self.execute_approved_broadcast(context, dummy_approval, user_id)
+            
+        if platform in ['platform_twitter', 'platform_both']:
+            tweet_url = await self.twitter.post_general_broadcast(context, message_data)
+            if tweet_url:
+                await context.bot.send_message(chat_id=user_id, text=f"✅ Tweet sent: {tweet_url}")
+            else:
+                await context.bot.send_message(chat_id=user_id, text="❌ Twitter post failed (check logs)")
+
+        return ConversationHandler.END
             
         if self.needs_approval(user_id):
             can_send, reason = await self.broadcast_limiter.can_broadcast(user_id)
