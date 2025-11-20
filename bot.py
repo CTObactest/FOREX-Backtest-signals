@@ -45,7 +45,7 @@ if not FINNHUB_API_KEY:
 # ---------------------------------
 
 # Conversation states
-WAITING_MESSAGE, WAITING_BUTTONS, WAITING_PROTECTION, WAITING_TARGET = range(4)
+WAITING_MESSAGE, WAITING_BUTTONS, WAITING_PROTECTION, WAITING_TARGET, WAITING_PLATFORM = range(5)
 WAITING_TEMPLATE_NAME, WAITING_TEMPLATE_MESSAGE, WAITING_TEMPLATE_CATEGORY = range(4, 7)
 WAITING_SCHEDULE_TIME, WAITING_SCHEDULE_REPEAT = range(7, 9)
 WAITING_ADMIN_ID, WAITING_ADMIN_ROLE = range(9, 11)
@@ -2181,6 +2181,35 @@ class TwitterIntegration:
             self.client = None
             self.api = None
             logger.warning("Twitter credentials not set")
+
+    async def post_general_broadcast(self, context, message_data: Dict) -> Optional[str]:
+        """Post a general broadcast to Twitter"""
+        if not self.client:
+            return None
+        
+        try:
+            media_ids = []
+            text_content = ""
+
+            if message_data['type'] == 'text':
+                text_content = message_data['content']
+            elif message_data['type'] == 'photo':
+                text_content = message_data.get('caption') or ""
+                if message_data.get('file_id'):
+                    media_ids = await self._upload_telegram_photo(context, message_data['file_id'])
+            
+            if len(text_content) > 280:
+                text_content = text_content[:277] + "..."
+
+            response = self.client.create_tweet(
+                text=text_content,
+                media_ids=media_ids if media_ids else None
+            )
+            return f"https://twitter.com/user/status/{response.data['id']}"
+            
+        except Exception as e:
+            logger.error(f"Failed to post broadcast to Twitter: {e}")
+            return None
     
     async def _upload_telegram_photo(self, context, file_id):
         """Download photo from Telegram and upload to Twitter"""
