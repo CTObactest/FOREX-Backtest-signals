@@ -6466,8 +6466,6 @@ class BroadcastBot:
         if not self.edu_content_manager:
             logger.warning("Educational content manager not initialized. Skipping daily tip.")
             return
-        
-        # Get all users who haven't opted out
         all_users = self.db.get_all_users()
         target_users = {
             user_id for user_id in all_users 
@@ -6477,18 +6475,19 @@ class BroadcastBot:
         if not target_users:
             logger.info("No users to send educational content to")
             return
-        
-        # Broadcast random educational content
-        success, failed = await self.edu_content_manager.broadcast_random_content(
+        content = await self.edu_content_manager.get_random_content()
+        if not content:
+            logger.info("No educational content found in database.")
+            return
+        success, failed = await self.edu_content_manager.broadcast_specific_content(
             context, 
-            target_users
+            target_users,
+            content 
         )
         
         logger.info(f"Daily educational content sent: {success} success, {failed} failed")
-        content = await self.edu_content_manager.get_random_content()
-        if content:
-            await self.twitter.post_daily_tip(context, content)
-
+        await self.twitter.post_daily_tip(context, content)
+        
     async def post_weekly_performance_to_twitter(self, context: ContextTypes.DEFAULT_TYPE):
         """Job: Weekly transparency post on Twitter"""
         thirty_days_ago = time.time() - (30 * 86400)
