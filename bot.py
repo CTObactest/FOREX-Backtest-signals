@@ -3572,6 +3572,8 @@ class BroadcastBot:
         if rating:
             attribution += f"\n⭐ Admin Rating: {'⭐' * rating}"
 
+        attribution += "\n\n🔕 Disable: /settings then toggle off Signal Suggestions"
+
 
         success_count = 0
         failed_count = 0
