@@ -5198,22 +5198,21 @@ class BroadcastBot:
             fallbacks=[CommandHandler("cancel", self.cancel_broadcast)]
         )
 
-        # New handler for signal reviews (with rating)
+        
         signal_review_handler = ConversationHandler(
             entry_points=[CallbackQueryHandler(self.handle_signal_review, pattern=r"^sig_(approve|reject)_")],
             states={
                 WAITING_SIGNAL_RATING: [
                     CallbackQueryHandler(self.receive_signal_rating, pattern=r"^sig_rate_")
                 ],
-                # --- ADD THIS STATE ---
+                
                 WAITING_SIGNAL_REJECTION_REASON: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_signal_rejection_reason)
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_signal_rejection_reason), # <--- Added comma here
                     CallbackQueryHandler(self.handle_quick_rejection_reason, pattern="^reason_")
                 ]
-                # ---------------------
             },
             fallbacks=[CommandHandler("cancel", self.cancel_broadcast)],
-            conversation_timeout=300 # 5 minutes to rate
+            conversation_timeout=300 
         )
 
         application.add_handler(CommandHandler("start", self.start_v2)) 
