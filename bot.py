@@ -2225,20 +2225,35 @@ class TwitterIntegration:
         tweet = f"💡 Trading Signal {stars}\n\n{content}\n\n👤 Signal by: {suggester}"
         return tweet[:280] 
     
-    async def post_daily_tip(self, content: Dict) -> Optional[str]:
-        """Post educational content"""
+    # Update the definition to accept 'context'
+    async def post_daily_tip(self, context, content: Dict) -> Optional[str]:
         if not self.client:
             return None
         
         try:
+            media_ids = []
+            text_content = ""
+
+            # Handle content types
             if content['type'] == 'text':
                 text_content = content['content']
+            elif content['type'] == 'photo':
+                # Grab caption
+                text_content = content.get('caption') or "Trading Chart"
+                # Upload the photo using the existing helper method
+                if content.get('file_id'):
+                    media_ids = await self._upload_telegram_photo(context, content['file_id'])
+            
+            # Fallback for video/documents (Twitter API for video is complex, maybe skip or just post link)
             else:
-                text_content = content.get('caption') or "Trading Tip"
+                 text_content = content.get('caption') or "Trading Tip"
 
             tweet_text = f"📚 Daily Trading Tip\n\n{text_content[:200]}\n\n#ForexEducation #TradingTips"
             
-            response = self.client.create_tweet(text=tweet_text[:280])
+            response = self.client.create_tweet(
+                text=tweet_text[:280],
+                media_ids=media_ids if media_ids else None
+            )
             return f"https://twitter.com/user/status/{response.data['id']}"
             
         except Exception as e:
