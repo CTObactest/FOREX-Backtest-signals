@@ -4803,43 +4803,42 @@ class BroadcastBot:
         else:
             await update.message.reply_text("❌ Failed to mark duty as complete. Please try again.")
     
-    async def duty_stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Show duty completion statistics"""
+async def duty_stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show duty completion statistics with team collaboration"""
         user_id = update.effective_user.id
         
         if user_id not in self.super_admin_ids:
             await update.message.reply_text("❌ Only Super Admins can view duty statistics.")
             return
         
-        # Get stats for past 7 days
         stats = self.admin_duty_manager.get_completion_stats(days=7)
         
         if not stats:
             await update.message.reply_text("📊 No duty completion data available yet.")
             return
         
-        message = (
-            "📊 <b>Duty Completion Stats (Last 7 Days)</b>\n\n"
-        )
+        message = "📊 <b>Duty Completion Stats (Last 7 Days)</b>\n\n"
         
         for stat in stats:
             completion_rate = stat['completion_rate']
+            manual = stat.get('manual_completed', 0)
+            auto = stat.get('auto_completed', 0)
+            total = stat['total_duties']
             
-            # Status emoji based on completion rate
-            if completion_rate >= 80:
-                status = "🟢"
-            elif completion_rate >= 50:
-                status = "🟡"
-            else:
-                status = "🔴"
+            if completion_rate >= 80: status = "🟢"
+            elif completion_rate >= 50: status = "🟡"
+            else: status = "🔴"
             
             message += (
                 f"{status} <b>{stat['admin_name']}</b>\n"
-                f"   {stat['completed_duties']}/{stat['total_duties']} duties "
-                f"({completion_rate:.1f}%)\n\n"
+                f"   Total: {stat['completed_duties']}/{total} ({completion_rate:.1f}%)\n"
+                f"   Manual: {manual} | Team-covered: {auto}\n\n"
             )
         
-        message += "<i>Use /myduty to check your current duty</i>"
+        message += (
+            "\n<i>💡 'Team-covered' = work done by other admins when this admin was unavailable</i>\n\n"
+            "Use /myduty to check your current duty"
+        )
         
         await update.message.reply_text(message, parse_mode=ParseMode.HTML)
 
@@ -5250,6 +5249,12 @@ class BroadcastBot:
             self.post_weekly_performance_to_twitter,
             time=utc_6pm,
             days=(6,)  # 0=Monday, 6=Sunday
+        )
+
+        utc_end_day = dt_time(hour=23, minute=55, tzinfo=timezone.utc)
+        application.job_queue.run_daily(
+            self.end_of_day_duty_verification_job,
+            time=utc_end_day
         )
         return application
 
