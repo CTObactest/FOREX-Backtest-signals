@@ -5302,9 +5302,9 @@ class BroadcastBot:
         # (Existing) Leaderboard job (Sunday at 00:00 UTC)
         utc_midnight = dt_time(hour=0, minute=0, tzinfo=timezone.utc)
         application.job_queue.run_daily(
-            self.run_leaderboards_job_v2, # <-- MODIFIED
+            self.run_leaderboards_job_v2,
             time=utc_midnight,
-            days=(6,)  # 0=Monday, 6=Sunday
+            days=(0,) 
         )
         
         # NEW: Daily Tip job (Daily at 10:00 UTC)
@@ -5347,7 +5347,7 @@ class BroadcastBot:
         application.job_queue.run_daily(
             self.post_weekly_performance_to_twitter,
             time=utc_6pm,
-            days=(6,)  # 0=Monday, 6=Sunday
+            days=(0,) 
         )
 
         utc_end_day = dt_time(hour=23, minute=55, tzinfo=timezone.utc)
