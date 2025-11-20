@@ -4184,7 +4184,7 @@ class BroadcastBot:
         return WAITING_TARGET
 
     async def handle_target_choice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle target audience choice and send broadcast"""
+        """Handle target audience choice, prepare message data, and ask for platform"""
         query = update.callback_query
         await query.answer()
         user_id = query.from_user.id
@@ -4198,12 +4198,12 @@ class BroadcastBot:
             'target_nonsubscribers': 'nonsubscribers',
             'target_admins': 'admins'
         }
-        target = target_map.get(query.data, 'all')
-    
+        selected_target = target_map.get(query.data, 'all')
+        
+        context.user_data['target'] = selected_target
+        
         if 'ready_message_data' in context.user_data:
             message_data = context.user_data['ready_message_data']
-            inline_buttons = message_data.get('inline_buttons') 
-            protect_content = message_data.get('protect_content', False)
             
         else:
             broadcast_message = context.user_data.get('broadcast_message')
@@ -4252,7 +4252,9 @@ class BroadcastBot:
                 message_data['type'] = 'document'
                 message_data['file_id'] = broadcast_message.document.file_id
                 message_data['caption'] = broadcast_message.caption
-                
+
+        context.user_data['ready_message_data'] = message_data
+        
         is_quality, issues = BroadcastQualityChecker.check_broadcast_quality(message_data)
         if not is_quality:
             issues_text = "\n".join([f"• {issue}" for issue in issues])
@@ -4273,7 +4275,7 @@ class BroadcastBot:
                 message_data,
                 user_id,
                 creator_name,
-                target
+                selected_target
             )
 
             if approval_id:
@@ -4294,99 +4296,29 @@ class BroadcastBot:
             await query.edit_message_text(reason)
             return ConversationHandler.END
 
-        all_users = self.db.get_all_users()
-        subscribers = self.db.get_all_subscribers()
-        admin_ids = self.db.get_all_admin_ids()
+        keyboard = [
+            [InlineKeyboardButton("✈️ Telegram Only", callback_data="platform_telegram")],
+            [InlineKeyboardButton("🐦 Twitter Only", callback_data="platform_twitter")],
+            [InlineKeyboardButton("🚀 Both Platforms", callback_data="platform_both")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
 
-        if target == 'all':
-            target_users = all_users
-            audience_name = "All Users"
-        elif target == 'subscribers':
-            target_users = subscribers
-            audience_name = "Subscribers"
-        elif target == 'nonsubscribers':
-            target_users = all_users - subscribers
-            audience_name = "Non-subscribers"
-        elif target == 'admins':
-            target_users = admin_ids
-            audience_name = "Admins"
-        else:
-            target_users = all_users
-            audience_name = "All Users"
-            
-        message = f"📢 Broadcasting to {audience_name} ({len(target_users)} users)..."
-        await query.edit_message_text(message)
-    
-        success_count = 0
-        failed_count = 0
-        
-        footer = "\n\n🔕 Disable: /settings then toggle off Admin Signals & Announcements"
+        target_display_names = {
+            'all': 'All Users',
+            'subscribers': 'Subscribers',
+            'nonsubscribers': 'Non-Subscribers',
+            'admins': 'Admins'
+        }
+        display_name = target_display_names.get(selected_target, 'Selected Audience')
 
-        for user_id_to_send in target_users: 
-            if not self.notification_manager.should_notify(user_id_to_send, 'broadcasts'):
-                failed_count += 1
-                continue
-            try:
-                if message_data['type'] == 'text':
-                    text_to_send = message_data['content'] + footer
-                    await context.bot.send_message(
-                        chat_id=user_id_to_send,
-                        text=text_to_send,
-                        reply_markup=message_data.get('inline_buttons'),
-                        protect_content=message_data.get('protect_content', False)
-                    )
-                elif message_data['type'] == 'photo':
-                    caption_to_send = (message_data.get('caption') or '') + footer
-                    await context.bot.send_photo(
-                        chat_id=user_id_to_send,
-                        photo=message_data['file_id'],
-                        caption=caption_to_send,
-                        reply_markup=message_data.get('inline_buttons'),
-                        protect_content=message_data.get('protect_content', False)
-                    )
-                elif message_data['type'] == 'video':
-                    caption_to_send = (message_data.get('caption') or '') + footer
-                    await context.bot.send_video(
-                        chat_id=user_id_to_send,
-                        video=message_data['file_id'],
-                        caption=caption_to_send,
-                        reply_markup=message_data.get('inline_buttons'),
-                        protect_content=message_data.get('protect_content', False)
-                    )
-                elif message_data['type'] == 'document':
-                    caption_to_send = (message_data.get('caption') or '') + footer
-                    await context.bot.send_document(
-                        chat_id=user_id_to_send,
-                        document=message_data['file_id'],
-                        caption=caption_to_send,
-                        reply_markup=message_data.get('inline_buttons'),
-                        protect_content=message_data.get('protect_content', False)
-                    )
-
-                success_count += 1
-                await asyncio.sleep(0.05)
-            except Exception as e:
-                logger.error(f"Failed to send to {user_id_to_send}: {e}")
-                failed_count += 1
-
-
-        self.db.log_activity(user_id, 'broadcast_sent', {
-            'target': audience_name,
-            'success': success_count,
-            'failed': failed_count
-        })
-
-        summary = (
-            f"✅ Broadcast Complete!\n\n"
-            f"📊 Results:\n"
-            f"Target: {audience_name}\n"
-            f"Successfully sent: {success_count}\n"
-            f"Failed: {failed_count}\n"
-            f"Total: {len(target_users)}"
+        await query.edit_message_text(
+            f"🎯 Target Selected: <b>{display_name}</b>\n\n"
+            "<b>Where do you want to post this broadcast?</b>",
+            reply_markup=reply_markup,
+            parse_mode=ParseMode.HTML
         )
 
-        await context.bot.send_message(chat_id=query.from_user.id, text=summary)
-        return ConversationHandler.END
+        return WAITING_PLATFORM
         
     async def notify_approvers_new_broadcast(self, context: ContextTypes.DEFAULT_TYPE, approval_id: str):
         """Notify approvers of new broadcast pending approval"""
