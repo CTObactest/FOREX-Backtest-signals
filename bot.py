@@ -1768,6 +1768,8 @@ class AdminDutyManager:
         self.admin_duties_collection = self.db['admin_duties']
         
         # Create indexes
+        self.CONTINUOUS_DUTIES = ['signal_review', 'broadcast_approval', 'user_engagement', 'community_moderation']
+        self.FINITE_TASKS = ['content_creation', 'quality_control', 'analytics_reporting']
         self.admin_duties_collection.create_index([('date', -1)])
         self.admin_duties_collection.create_index('admin_id')
 
@@ -1854,10 +1856,10 @@ class AdminDutyManager:
 
     def auto_complete_duties_with_no_work(self) -> Dict[str, Dict]:
         """
-        At day's end, handle incomplete duties:
-        1. Auto-complete if NO work existed
-        2. Auto-complete if work was done by ANOTHER admin (collaborative credit)
-        3. Leave incomplete if work existed but wasn't done
+        At day's end (Midnight UTC):
+        1. Auto-complete if NO work existed (e.g. no broadcasts to approve)
+        2. Verify & Complete 'Continuous' duties if actions were recorded
+        3. Fail duties where work existed but wasn't done
         """
         date_key = self.get_date_key()
         
@@ -1868,7 +1870,7 @@ class AdminDutyManager:
         
         results = {
             'auto_completed_no_work': {},
-            'auto_completed_covered': {},
+            'verified_complete': {}, # New category for work done & verified by system
             'left_incomplete': {}
         }
         
@@ -1876,12 +1878,14 @@ class AdminDutyManager:
             duty_category = duty['duty_category']
             admin_id = duty['admin_id']
             admin_name = duty['admin_name']
+            action_count = duty.get('action_count', 0)
             
-            # Check if work existed
+            # Check if work existed in the system
             had_work = self._check_if_work_existed(duty_category, date_key)
             
             if not had_work:
-                # No work existed - auto-complete with full credit
+                # Scenario 1: No work existed at all.
+                # Mark as completed (Exempt)
                 self.admin_duties_collection.update_one(
                     {'_id': duty['_id']},
                     {
@@ -1890,34 +1894,32 @@ class AdminDutyManager:
                             'auto_completed': True,
                             'auto_reason': 'no_work',
                             'completed_at': time.time(),
-                            'completion_notes': 'Auto-completed: No work available today'
+                            'completion_notes': 'System: No work was available today'
                         }
                     }
                 )
                 results['auto_completed_no_work'].setdefault(duty_category, []).append(admin_name)
             
-            else:
-                # Work existed - check if another admin handled it
-                action_count = duty.get('action_count', 0)
-                
-                if action_count > 0:
-                    # Work was done (by this admin or others) - give collaborative credit
-                    self.admin_duties_collection.update_one(
-                        {'_id': duty['_id']},
-                        {
-                            '$set': {
-                                'completed': True,
-                                'auto_completed': True,
-                                'auto_reason': 'covered_by_team',
-                                'completed_at': time.time(),
-                                'completion_notes': f'Auto-completed: Work handled by team ({action_count} actions)'
-                            }
+            elif action_count > 0:
+                # Scenario 2: Work existed AND this admin did actions.
+                # This is a "System Verified Completion" (Good Job)
+                self.admin_duties_collection.update_one(
+                    {'_id': duty['_id']},
+                    {
+                        '$set': {
+                            'completed': True,
+                            'auto_completed': False, # It wasn't "auto" in a bad way, it was verified
+                            'system_verified': True, # New flag
+                            'completed_at': time.time(),
+                            'completion_notes': f'System Verified: {action_count} actions recorded.'
                         }
-                    )
-                    results['auto_completed_covered'].setdefault(duty_category, []).append(f"{admin_name} (covered by team)")
+                    }
+                )
+                results['verified_complete'].setdefault(duty_category, []).append(f"{admin_name} ({action_count} actions)")
                 
-                else:
-                    results['left_incomplete'].setdefault(duty_category, []).append(admin_name)
+            else:
+                # Scenario 3: Work existed but admin did nothing (and didn't mark complete)
+                results['left_incomplete'].setdefault(duty_category, []).append(admin_name)
         
         return results
 
