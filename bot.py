@@ -469,10 +469,6 @@ class PromotionManager:
         
         logger.info(f"Promotion announced to {sent} active non-subscribers")
 
-# ============================================
-# NEW FEATURE: ANTI-SPAM & QUALITY CONTROL
-# ============================================
-
 class BroadcastFrequencyManager:
     """Prevent broadcast spam"""
     
@@ -482,7 +478,6 @@ class BroadcastFrequencyManager:
     async def can_broadcast(self, admin_id: int) -> (bool, str):
         """Check if admin can send another broadcast"""
         
-        # Get timestamp of the last broadcast
         last_broadcast = self.db.activity_logs_collection.find_one(
             {
                 'user_id': admin_id,
@@ -647,12 +642,12 @@ class NotificationManager:
     """Respect user preferences"""
     
     DEFAULT_PREFS = {
-        'broadcasts': True, # General announcements
-        'signals': True,    # Approved signals
-        'leaderboards': True, # Weekly/Monthly leaderboards
-        'tips': True,       # Daily tips
-        'promo': True,      # Marketing promos
-        'achievements': True # Achievement notifications
+        'broadcasts': True, 
+        'signals': True,    
+        'leaderboards': True, 
+        'tips': True,       
+        'promo': True,      
+        'achievements': True 
     }
 
     def __init__(self, db):
@@ -665,7 +660,6 @@ class NotificationManager:
         if not user or 'notifications' not in user:
             return self.DEFAULT_PREFS.copy()
         
-        # Merge user prefs with defaults to ensure all keys exist
         user_prefs = user.get('notifications', {})
         prefs = self.DEFAULT_PREFS.copy()
         prefs.update(user_prefs) # Overwrite defaults with user's choices
@@ -674,10 +668,9 @@ class NotificationManager:
 
     def should_notify(self, user_id: int, notification_type: str) -> bool:
         """Check if user wants this notification"""
-        # Ensure type is valid
         if notification_type not in self.DEFAULT_PREFS:
             logger.warning(f"Invalid notification_type check: {notification_type}")
-            return True # Default to sending if type is unknown
+            return True 
 
         prefs = self.get_notification_preferences(user_id)
         return prefs.get(notification_type, True)
@@ -1809,8 +1802,6 @@ class AdminDutyManager:
         if not duty_category:
             return False
         
-        # Find if this admin has this duty today OR if ANY admin has this duty
-        # We'll credit the action to ALL admins with this duty (Collaborative Credit)
         duties_to_credit = list(self.admin_duties_collection.find({
             'date': date_key,
             'duty_category': duty_category,
@@ -2026,19 +2017,11 @@ class AdminDutyManager:
         assignments = {}
         used_categories = set()
         
-        # Assign duties ensuring:
-        # 1. No admin gets same duty as yesterday
-        # 2. High priority duties are covered
-        # 3. Fair distribution
-        
-        # First pass: Assign high priority duties
         high_priority = [cat for cat, info in self.DUTY_CATEGORIES.items() if info['priority'] == 'high']
         
         for i, admin in enumerate(eligible_admins[:len(high_priority)]):
             admin_id = admin['user_id']
             last_duty = last_assignments.get(admin_id)
-            
-            # Find a high priority duty they didn't have yesterday
             assigned = False
             for category in high_priority:
                 if category != last_duty and category not in used_categories:
@@ -2052,7 +2035,6 @@ class AdminDutyManager:
                     assigned = True
                     break
             
-            # If all high priority were yesterday's, assign any high priority
             if not assigned:
                 for category in high_priority:
                     if category not in used_categories:
@@ -2065,13 +2047,12 @@ class AdminDutyManager:
                         used_categories.add(category)
                         break
         
-        # Second pass: Assign remaining duties to remaining admins
         remaining_admins = [a for a in eligible_admins if a['user_id'] not in assignments]
         remaining_duties = [cat for cat in duty_categories if cat not in used_categories]
         
         for i, admin in enumerate(remaining_admins):
             if i >= len(remaining_duties):
-                break  # More admins than duties
+                break  
             
             admin_id = admin['user_id']
             category = remaining_duties[i]
@@ -2277,8 +2258,7 @@ class TwitterIntegration:
         
         tweet = f"💡 Trading Signal {stars}\n\n{content}\n\n👤 Signal by: {suggester}"
         return tweet[:280] 
-    
-    # Update the definition to accept 'context'
+        
     async def post_daily_tip(self, context, content: Dict) -> Optional[str]:
         if not self.client:
             return None
@@ -2443,6 +2423,32 @@ class BroadcastBot:
             "CR8047034", "CR8052255", "CR7380411", "CR7707424", "CR8581785", "CR8644473",
             "CR8648274", "CR8661054",
         }
+
+    async def handle_platform_choice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        await query.answer()
+        
+        choice = query.data
+        target = context.user_data.get('target', 'all')
+        if 'ready_message_data' in context.user_data:
+            message_data = context.user_data['ready_message_data']
+        else:
+            pass 
+
+        status_msg = "🚀 Broadcasting started...\n"
+        
+        if choice in ['platform_telegram', 'platform_both']:
+            status_msg += "• Sending to Telegram users...\n"
+        if choice in ['platform_twitter', 'platform_both']:
+            status_msg += "• Posting to Twitter...\n"
+            tweet_url = await self.twitter.post_general_broadcast(context, message_data)
+            if tweet_url:
+                status_msg += f"✅ Tweet sent: {tweet_url}\n"
+            else:
+                status_msg += "❌ Twitter post failed (check logs)\n"
+
+        await context.bot.send_message(chat_id=query.from_user.id, text=status_msg)
+        return ConversationHandler.END
 
     async def end_of_day_duty_verification_job(self, context: ContextTypes.DEFAULT_TYPE):
         """Runs at 23:55 UTC to auto-complete duties and send summary."""
@@ -2676,8 +2682,6 @@ class BroadcastBot:
             if self.is_admin(user_id):
                 keyboard.append([InlineKeyboardButton("📋 Team Duties & QA", callback_data='admin_duties')])
                 
-            # --- NEW: Content & Education Management ---
-            # Restricted to Super Admins (or role with permission to sync)
             if user_id in self.super_admin_ids: 
                  keyboard.append([InlineKeyboardButton("📚 Content & Education", callback_data='admin_content')])
             
@@ -2696,7 +2700,6 @@ class BroadcastBot:
             await update.message.reply_text(admin_main_menu_text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
         else:
             if is_new:
-                # Special welcome for new users
                 welcome = (
                     f"👋 <b>Welcome to PipSage, {user.first_name}!</b>\n\n"
                     
@@ -3002,22 +3005,14 @@ class BroadcastBot:
                 await query.answer("Failed to delete.", show_alert=True)
 
         elif action == "use":
-            # LOAD TEMPLATE INTO BROADCAST FLOW
             context.user_data.clear()
             
             # Load the message data directly from template
             context.user_data['ready_message_data'] = template['message_data']
             context.user_data['template_name'] = template['name']
             
-            # Increment usage count
             self.db.increment_template_usage(template_id)
-            
-            # Skip straight to Target Audience selection
             await self.ask_target_audience(query, context, scheduled=False)
-            
-            # IMPORTANT: We need to manually set the state for ConversationHandler
-            # This requires a trick because we are outside the ConversationHandler flow usually.
-            # See Step 4 for how we fix the state handling.
             return WAITING_TARGET
 
     async def list_templates_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3290,13 +3285,10 @@ class BroadcastBot:
                  'US30', 'NAS100', 'SPX500']  # Added indices
         has_pair = any(pair in text.upper() for pair in pairs)
     
-        # TWEAK: More flexible pair format matching
         if not has_pair:
-            # Match XXX/YYY, XXXYYY, or common formats
             if not re.search(r'[A-Z]{3}[/\s]?[A-Z]{3}', text.upper()):
                 return False, "Could not identify trading pair. Use format like 'EUR/USD', 'EURUSD' or 'GOLD'."
     
-        # TWEAK: Add minimum length check instead of strict format
         if len(text.strip()) < 20:
             return False, "Signal description is too short. Please provide more details (entry, target, reasoning)."
     
@@ -3304,7 +3296,6 @@ class BroadcastBot:
 
     async def validate_signal_image(self, photo_file: 'telegram.PhotoSize') -> (bool, str, str):
         """Validate signal image - MORE LENIENT"""
-        # TWEAK: Reduce minimum dimensions
         MIN_WIDTH = 200   # Was 300
         MIN_HEIGHT = 150  # Was 200
 
@@ -3328,7 +3319,6 @@ class BroadcastBot:
                 if not is_valid:
                     return False, f"Image text is incomplete. {reason}", extracted_text
             else:
-                # TWEAK: Accept image even if OCR is poor (admin will review)
                 logger.info(f"Low OCR quality ({len(extracted_text)} chars), accepting for manual review")
         
             return True, "Image is valid", extracted_text
@@ -3350,7 +3340,6 @@ class BroadcastBot:
         if message.text:
             is_valid, reason = self.validate_signal_format(message.text)
             if not is_valid:
-                # TWEAK: Warning instead of rejection
                 keyboard = [
                     [InlineKeyboardButton("✅ Submit Anyway", callback_data=f"force_submit_text")],
                     [InlineKeyboardButton("❌ Cancel & Fix", callback_data="cancel_signal")]
@@ -3417,12 +3406,10 @@ class BroadcastBot:
                 if not message_data['caption'] and ocr_text:
                     message_data['caption'] = f"[Extracted Text]:\n{ocr_text[:500]}..."
         elif message.video:
-            # We can't validate video, so we just accept it
             message_data['type'] = 'video'
             message_data['file_id'] = message.video.file_id
             message_data['caption'] = message.caption
         elif message.document:
-             # We can't validate documents, so we just accept it
             message_data['type'] = 'document'
             message_data['file_id'] = message.document.file_id
             message_data['caption'] = message.caption
@@ -3430,8 +3417,6 @@ class BroadcastBot:
             await update.message.reply_text("Unsupported format. Please send text or a photo.")
             return ConversationHandler.END
 
-
-        # --- IF ALL CHECKS PASS, SAVE ---
         suggestion_id = self.db.create_signal_suggestion(
             message_data,
             user.id,
@@ -3606,7 +3591,6 @@ class BroadcastBot:
             # ...
 
         elif action == "reject":
-            # Store suggestion ID and ask for rejection reason
             context.user_data['suggestion_to_reject'] = suggestion_id
             
             new_prompt = "Please provide a reason for rejecting this signal:"
@@ -3660,10 +3644,8 @@ class BroadcastBot:
             self.engagement_tracker.update_engagement(suggester_id, 'signal_5_star')
         await self.achievement_system.check_and_award_achievements(suggester_id, context, self.db)
 
-        # Get updated suggestion data (with rating)
         suggestion = self.db.get_suggestion_by_id(suggestion_id)
 
-        # Broadcast to all users
         await self.broadcast_signal(context, suggestion)
 
         # Notify suggester
@@ -4144,7 +4126,6 @@ class BroadcastBot:
         protect_content = query.data == "protect_yes"
         context.user_data['protect_content'] = protect_content
 
-        # If this is a scheduled broadcast, ask for time
         if 'scheduled' in context.user_data and context.user_data['scheduled']:
             await query.edit_message_text(
                 "⏰ Enter scheduled time (e.g., '2024-12-31 23:59') or relative time (e.g., '1h 30m')."
@@ -4335,8 +4316,6 @@ class BroadcastBot:
             f"ID: {short_id}\n\n"
             f"Use /approvals to review pending broadcasts."
         )
-
-        # Notify all users with approval permission
         admins = self.db.get_all_admins()
         for admin in admins:
             if self.has_permission(admin['user_id'], Permission.APPROVE_BROADCASTS):
@@ -4454,7 +4433,6 @@ class BroadcastBot:
         except Exception as e:
             logger.error(f"Error in process_scheduled_broadcasts: {e}")
 
-    # New Leaderboard Methods
     async def broadcast_suggester_leaderboard_v2(self, context: ContextTypes.DEFAULT_TYPE, time_frame: str):
         """Professional, motivating leaderboard"""
         stats = self.db.get_suggester_stats(time_frame)
@@ -4530,9 +4508,8 @@ class BroadcastBot:
         else: # score is 1-3
             activity_level = "Poor activity — your contribution is disappointing."
 
-        return f"Comment: {activity_level}" # Only return the score-based comment
+        return f"Comment: {activity_level}" 
 
-    # MODIFIED FUNCTION
     async def broadcast_admin_leaderboard_v2(self, context: ContextTypes.DEFAULT_TYPE, time_frame: str):
         """Professional admin performance board - private to admins"""
         stats = self.db.get_admin_performance_stats(time_frame)
@@ -4598,13 +4575,10 @@ class BroadcastBot:
         logger.info("Running weekly leaderboard job...")
         today = datetime.now(timezone.utc)
 
-        # 1. Weekly Suggester Leaderboard
         await self.broadcast_suggester_leaderboard_v2(context, 'weekly')
         
-        # 2. Weekly Admin Leaderboard
         await self.broadcast_admin_leaderboard_v2(context, 'weekly')
 
-        # 3. Monthly Leaderboards (if first Sunday of month)
         if today.day <= 7:
             await self.broadcast_suggester_leaderboard_v2(context, 'monthly')
             await self.broadcast_admin_leaderboard_v2(context, 'monthly')
@@ -4618,10 +4592,8 @@ class BroadcastBot:
         elif repeat == 'weekly':
             next_dt = dt + timedelta(weeks=1)
         elif repeat == 'monthly':
-            # A simple approximation
             next_dt = dt + timedelta(days=30)
         else:
-            # Should not happen if 'repeat' is 'once'
             next_dt = dt
 
         return next_dt.timestamp()
@@ -4641,8 +4613,6 @@ class BroadcastBot:
         await update.message.reply_text("🔄 Syncing educational content from channel...")
         
         try:
-            # Note: This requires bot to see messages. 
-            # Standard Bot API limitations apply regarding fetching history.
             count = await self.edu_content_manager.fetch_and_store_content(context, limit=200)
             await update.message.reply_text(
                 f"✅ Successfully synced {count} educational content items!\n\n"
@@ -4664,7 +4634,6 @@ class BroadcastBot:
             await update.message.reply_text("❌ Educational content feature is not configured.")
             return
         
-        # FIX: Added 'await' to resolve the RuntimeWarning
         content = await self.edu_content_manager.get_random_content()
         
         if not content:
@@ -4709,25 +4678,21 @@ class BroadcastBot:
     async def assign_daily_duties_job(self, context: ContextTypes.DEFAULT_TYPE):
         """Job to assign daily duties at midnight UTC"""
         try:
-            # Get all admins
             admins = self.db.get_all_admins()
             
             if not admins:
                 logger.warning("No admins found for duty assignment")
                 return
             
-            # Assign duties
             assignments = self.admin_duty_manager.assign_daily_duties(admins)
             
             if not assignments:
                 logger.warning("No duty assignments created")
                 return
             
-            # Send duty notifications to each admin
             for admin_id, duty_data in assignments.items():
                 await self.send_duty_notification(context, admin_id, duty_data)
             
-            # Send summary to super admins
             await self.send_duty_summary_to_super_admins(context, assignments)
             
             logger.info(f"Daily duties assigned and notifications sent to {len(assignments)} admins")
@@ -4865,7 +4830,6 @@ class BroadcastBot:
         category = duty['duty_category']
         action_count = duty.get('action_count', 0)
 
-        # 1. Check if this is a Continuous Duty (Cannot be marked manually)
         if category in self.admin_duty_manager.CONTINUOUS_DUTIES:
             await update.message.reply_text(
                 f"⚠️ <b>Cannot Mark Complete Manually</b>\n\n"
@@ -4877,11 +4841,7 @@ class BroadcastBot:
                 parse_mode=ParseMode.HTML
             )
             return
-
-        # 2. For Finite Tasks (Content Creation, etc.), verify work if possible
-        # If it's a trackable finite task and 0 actions, warn them.
         if category == 'content_creation' and action_count == 0:
-            # Allow them to bypass if they provide a link/note, otherwise block
             if not context.args:
                 await update.message.reply_text(
                     f"⚠️ <b>Verification Required</b>\n\n"
@@ -4892,7 +4852,6 @@ class BroadcastBot:
                 )
                 return
 
-        # Proceed with manual completion for Finite Tasks
         notes = ' '.join(context.args) if context.args else None
         success = self.admin_duty_manager.mark_duty_complete(user_id, notes)
         
@@ -4995,8 +4954,6 @@ class BroadcastBot:
 
     async def channel_post_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Auto-save new posts from the educational channel"""
-        # Verify it's the correct channel
-        # Note: self.edu_content_manager.channel_id might be a string like "-1001234567890"
         if str(update.effective_chat.id) == str(self.edu_content_manager.channel_id):
             saved = await self.edu_content_manager.process_and_save(update.channel_post)
             if saved:
@@ -5008,9 +4965,7 @@ class BroadcastBot:
         if not self.is_admin(user_id):
             return
 
-        # Check if it's a forward
         if update.message.forward_from_chat:
-             # You can verify the chat ID here if you want strict control
              saved = await self.edu_content_manager.process_and_save(update.message)
              if saved:
                  await update.message.reply_text("✅ Content saved to educational database!")
@@ -5075,6 +5030,9 @@ class BroadcastBot:
                 WAITING_TARGET: [
                     CallbackQueryHandler(self.handle_target_choice, pattern="^target_")
                 ],
+                WAITING_PLATFORM: [
+                    CallbackQueryHandler(self.handle_platform_choice, pattern="^platform_")
+                ]
             },
             fallbacks=[CommandHandler("cancel", self.cancel_broadcast)]
         )
@@ -5206,6 +5164,7 @@ class BroadcastBot:
                 # --- ADD THIS STATE ---
                 WAITING_SIGNAL_REJECTION_REASON: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_signal_rejection_reason)
+                    CallbackQueryHandler(self.handle_quick_rejection_reason, pattern="^reason_")
                 ]
                 # ---------------------
             },
