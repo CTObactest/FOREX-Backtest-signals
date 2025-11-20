@@ -3498,6 +3498,7 @@ class BroadcastBot:
             admin_user.id, 
             reason=reason
         )
+        self.admin_duty_manager.credit_duty_for_action(update.effective_user.id, 'signal_rejected')
 
         # Notify suggester
         try:
