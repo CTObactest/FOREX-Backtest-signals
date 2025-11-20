@@ -3448,6 +3448,7 @@ class BroadcastBot:
 
         # Update status with rating
         self.db.update_suggestion_status(suggestion_id, 'approved', query.from_user.id, rating=rating)
+        self.admin_duty_manager.credit_duty_for_action(query.from_user.id, 'signal_approved')
         
         # --- ADD THIS BLOCK ---
         suggester_id = suggestion['suggested_by']
