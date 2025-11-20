@@ -4748,45 +4748,65 @@ class BroadcastBot:
         await update.message.reply_text(message, parse_mode=ParseMode.HTML)
     
     async def duty_complete_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Mark duty as complete"""
+        """Mark duty as complete - WITH STRICT VERIFICATION"""
         user_id = update.effective_user.id
         
         if not self.is_admin(user_id):
             await update.message.reply_text("❌ This command is for admins only.")
             return
         
-        # Get notes from command args
-        notes = ' '.join(context.args) if context.args else None
-        
         duty = self.admin_duty_manager.get_today_duty(user_id)
-        
         if not duty:
             await update.message.reply_text("❌ You don't have a duty assigned for today.")
             return
         
         if duty.get('completed'):
-            await update.message.reply_text("✅ You've already marked your duty as complete today!")
+            await update.message.reply_text("✅ This duty is already marked as complete.")
             return
-        
-        # Mark as complete
+
+        category = duty['duty_category']
+        action_count = duty.get('action_count', 0)
+
+        # 1. Check if this is a Continuous Duty (Cannot be marked manually)
+        if category in self.admin_duty_manager.CONTINUOUS_DUTIES:
+            await update.message.reply_text(
+                f"⚠️ <b>Cannot Mark Complete Manually</b>\n\n"
+                f"The duty <b>{duty['duty_info']['name']}</b> is a continuous daily responsibility.\n\n"
+                f"📊 <b>Current Activity:</b> {action_count} actions recorded.\n\n"
+                f"✅ <b>How it works:</b>\n"
+                f"Simply perform your tasks (approve signals, moderate, etc.). The system will automatically verify and mark this as 'Complete' at midnight UTC based on your logs.\n"
+                f"You do not need to use this command.",
+                parse_mode=ParseMode.HTML
+            )
+            return
+
+        # 2. For Finite Tasks (Content Creation, etc.), verify work if possible
+        # If it's a trackable finite task and 0 actions, warn them.
+        if category == 'content_creation' and action_count == 0:
+            # Allow them to bypass if they provide a link/note, otherwise block
+            if not context.args:
+                await update.message.reply_text(
+                    f"⚠️ <b>Verification Required</b>\n\n"
+                    f"The system hasn't detected any template creations or content syncs today.\n\n"
+                    f"If you created content externally (e.g. directly in the channel), please provide proof/notes:\n"
+                    f"<code>/dutycomplete Posted market update in channel</code>",
+                    parse_mode=ParseMode.HTML
+                )
+                return
+
+        # Proceed with manual completion for Finite Tasks
+        notes = ' '.join(context.args) if context.args else None
         success = self.admin_duty_manager.mark_duty_complete(user_id, notes)
         
         if success:
             self.engagement_tracker.update_engagement(user_id, 'duty_completed')
-            
-            message = (
-                "✅ <b>Duty Marked Complete!</b>\n\n"
-                f"Great work! Your {duty['duty_info']['name']} is done.\n\n"
+            await update.message.reply_text(
+                f"✅ <b>Duty Marked Complete!</b>\n\n"
+                f"{duty['duty_info']['name']}\n"
+                f"Notes: {notes or 'None'}",
+                parse_mode=ParseMode.HTML
             )
             
-            if notes:
-                message += f"<b>Your notes:</b> {notes}\n\n"
-            
-            message += "<i>Keep up the excellent teamwork! 🎉</i>"
-            
-            await update.message.reply_text(message, parse_mode=ParseMode.HTML)
-            
-            # Notify super admins
             for super_admin_id in self.super_admin_ids:
                 if super_admin_id != user_id:
                     try:
