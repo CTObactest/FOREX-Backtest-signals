@@ -6010,19 +6010,30 @@ class BroadcastBot:
             await update.message.reply_text(stats_text)
 
     async def list_templates(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /templates command"""
+        """Handle /templates command - Interactive Menu"""
         if not self.has_permission(update.effective_user.id, Permission.MANAGE_TEMPLATES):
             await update.message.reply_text("❌ You don't have permission to use this command.")
             return
 
         templates = self.db.get_all_templates()
+        
         if not templates:
-            await update.message.reply_text("No templates found.")
+            await update.message.reply_text("📝 No templates found.\nUse /savetemplate to create one.")
             return
 
-        template_list = "\n".join([f"• {t['name']} ({t['category']})" for t in templates])
-        await update.message.reply_text(f"📝 Templates:\n{template_list}")
-
+        keyboard = []
+        for t in templates:
+            # Create a button for each template: "Name (Category)"
+            btn_text = f"{t['name']} ({t.get('category', 'General')})"
+            # Callback data format: tpl_view_TEMPLATEID
+            keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"tpl_view_{t['_id']}")])
+            
+        keyboard.append([InlineKeyboardButton("❌ Close", callback_data="close_settings")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text("📝 <b>Template Manager</b>\nSelect a template to view, delete, or broadcast:", 
+                                      reply_markup=reply_markup, 
+                                      parse_mode=ParseMode.HTML)
     async def list_scheduled(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /scheduled command"""
         if not self.has_permission(update.effective_user.id, Permission.SCHEDULE_BROADCASTS):
