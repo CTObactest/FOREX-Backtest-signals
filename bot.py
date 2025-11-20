@@ -3779,6 +3779,8 @@ class BroadcastBot:
 
         success_count = 0
         failed_count = 0
+                                            
+        footer = "\n\n🔕 Disable: /settings then toggle off Admin Signals & Announcements"
 
         for user_id in target_users:
             if not self.notification_manager.should_notify(user_id, 'broadcasts'):
@@ -3786,33 +3788,41 @@ class BroadcastBot:
                 continue
             try:
                 if message_data['type'] == 'text':
+                    # Append footer
+                    text_to_send = message_data['content'] + footer
                     await context.bot.send_message(
                         chat_id=user_id,
-                        text=message_data['content'],
+                        text=text_to_send,
                         reply_markup=message_data.get('inline_buttons'),
                         protect_content=message_data.get('protect_content', False)
                     )
                 elif message_data['type'] == 'photo':
+                    # Append footer
+                    caption_to_send = (message_data.get('caption') or '') + footer
                     await context.bot.send_photo(
                         chat_id=user_id,
                         photo=message_data['file_id'],
-                        caption=message_data.get('caption'),
+                        caption=caption_to_send,
                         reply_markup=message_data.get('inline_buttons'),
                         protect_content=message_data.get('protect_content', False)
                     )
                 elif message_data['type'] == 'video':
+                    # Append footer
+                    caption_to_send = (message_data.get('caption') or '') + footer
                     await context.bot.send_video(
                         chat_id=user_id,
                         video=message_data['file_id'],
-                        caption=message_data.get('caption'),
+                        caption=caption_to_send,
                         reply_markup=message_data.get('inline_buttons'),
                         protect_content=message_data.get('protect_content', False)
                     )
                 elif message_data['type'] == 'document':
+                    # Append footer
+                    caption_to_send = (message_data.get('caption') or '') + footer
                     await context.bot.send_document(
                         chat_id=user_id,
                         document=message_data['file_id'],
-                        caption=message_data.get('caption'),
+                        caption=caption_to_send,
                         reply_markup=message_data.get('inline_buttons'),
                         protect_content=message_data.get('protect_content', False)
                     )
@@ -3823,7 +3833,6 @@ class BroadcastBot:
                 logger.error(f"Failed to send approved broadcast to {user_id}: {e}")
                 failed_count += 1
 
-        # Log the broadcast
         self.db.log_activity(approved_by, 'approved_broadcast_sent', {
             'approval_id': str(approval['_id']),
             'creator': approval['created_by'],
