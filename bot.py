@@ -3737,14 +3737,20 @@ class BroadcastBot:
         reason = query.data.replace("reason_", "")
         suggestion_id = context.user_data.pop('suggestion_to_reject', None)
         admin_user = update.effective_user
+        
+        async def safe_edit(text):
+            if query.message.caption is not None:
+                await query.edit_message_caption(caption=text)
+            else:
+                await query.edit_message_text(text=text)
 
         if not suggestion_id:
-            await query.edit_message_text("❌ Error: Suggestion ID not found. Please try again.")
+            await safe_edit("❌ Error: Suggestion ID not found. Please try again.")
             return ConversationHandler.END
 
         suggestion = self.db.get_suggestion_by_id(suggestion_id)
         if not suggestion:
-            await query.edit_message_text("❌ Error: Suggestion not found.")
+            await safe_edit("❌ Error: Suggestion not found.")
             return ConversationHandler.END
 
         self.db.update_suggestion_status(
@@ -3763,7 +3769,7 @@ class BroadcastBot:
         except Exception as e:
             logger.warning(f"Failed to notify suggester {suggestion['suggested_by']} of rejection: {e}")
 
-        await query.edit_message_text(f"❌ Signal rejected.\nReason: {reason}")
+        await safe_edit(f"❌ Signal rejected.\nReason: {reason}")
         return ConversationHandler.END
 
     async def broadcast_signal(self, context: ContextTypes.DEFAULT_TYPE, suggestion: Dict):
