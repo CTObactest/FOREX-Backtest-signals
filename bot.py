@@ -4265,6 +4265,8 @@ class BroadcastBot:
 
                     success_count = 0
                     failed_count = 0
+                    # Define the footer
+                    footer = "\n\n🔕 Disable: /settings then toggle off Admin Signals & Announcements"
 
                     # Send messages
                     for user_id in target_users:
@@ -4273,33 +4275,21 @@ class BroadcastBot:
                             continue
                         try:
                             if message_data['type'] == 'text':
+                                # Append footer
+                                text_to_send = message_data['content'] + footer
                                 await context.bot.send_message(
                                     chat_id=user_id,
-                                    text=message_data['content'],
+                                    text=text_to_send,
                                     reply_markup=message_data.get('inline_buttons'),
                                     protect_content=message_data.get('protect_content', False)
                                 )
                             elif message_data['type'] == 'photo':
+                                # Append footer
+                                caption_to_send = (message_data.get('caption') or '') + footer
                                 await context.bot.send_photo(
                                     chat_id=user_id,
                                     photo=message_data['file_id'],
-                                    caption=message_data.get('caption'),
-                                    reply_markup=message_data.get('inline_buttons'),
-                                    protect_content=message_data.get('protect_content', False)
-                                )
-                            elif message_data['type'] == 'video':
-                                await context.bot.send_video(
-                                    chat_id=user_id,
-                                    video=message_data['file_id'],
-                                    caption=message_data.get('caption'),
-                                    reply_markup=message_data.get('inline_buttons'),
-                                    protect_content=message_data.get('protect_content', False)
-                                )
-                            elif message_data['type'] == 'document':
-                                await context.bot.send_document(
-                                    chat_id=user_id,
-                                    document=message_data['file_id'],
-                                    caption=message_data.get('caption'),
+                                    caption=caption_to_send,
                                     reply_markup=message_data.get('inline_buttons'),
                                     protect_content=message_data.get('protect_content', False)
                                 )
