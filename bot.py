@@ -1294,26 +1294,25 @@ class MongoDBHandler:
             logger.error(f"Error getting suggester stats: {e}")
             return []
 
-    # MODIFIED FUNCTION
+    # In MongoDBHandler class
+
     def get_admin_performance_stats(self, time_frame: str) -> List[Dict]:
-        """Get admin performance stats for a given time frame (weekly/monthly)"""
+        """Get admin performance stats including Duty Consistency"""
         try:
             current_time = time.time()
             if time_frame == 'weekly':
                 start_time = current_time - timedelta(days=7).total_seconds()
+                date_filter = (datetime.now(timezone.utc) - timedelta(days=7)).strftime('%Y-%m-%d')
             elif time_frame == 'monthly':
                 start_time = current_time - timedelta(days=30).total_seconds()
+                date_filter = (datetime.now(timezone.utc) - timedelta(days=30)).strftime('%Y-%m-%d')
             else:
                 return []
 
             pipeline = [
-                { # 1. Start with all admins
-                    '$project': {
-                        'user_id': '$user_id',
-                        'admin_name': '$name'
-                    }
-                },
-                { # 2. Look up their activities in the given time frame
+                { '$project': { 'user_id': '$user_id', 'admin_name': '$name' } },
+                # 1. Lookup Activities (Existing)
+                {
                     '$lookup': {
                         'from': 'activity_logs',
                         'let': {'admin_user_id': '$user_id'},
@@ -1323,81 +1322,61 @@ class MongoDBHandler:
                                     '$expr': {
                                         '$and': [
                                             {'$eq': ['$user_id', '$$admin_user_id']},
-                                            {'$gte': ['$timestamp', start_time]},
-                                            {'$in': ['$action', [
-                                                'broadcast_sent', 'approved_broadcast_sent',
-                                                'broadcast_approved', 'broadcast_rejected',
-                                                'signal_approved', 'signal_rejected'
-                                            ]]}
+                                            {'$gte': ['$timestamp', start_time]}
                                         ]
                                     }
                                 }
-                            },
-                            {
-                                '$project': {'action': 1} # Only need the action field
                             }
                         ],
                         'as': 'activities'
                     }
                 },
-                { # 3. Project the counts
-                    '$project': {
-                        'admin_name': '$admin_name',
-                        'user_id': '$user_id',
-                        'actions': '$activities.action', # Extract the list of action strings
+                # 2. Lookup Duty Completions (NEW)
+                {
+                    '$lookup': {
+                        'from': 'admin_duties',
+                        'let': {'admin_user_id': '$user_id'},
+                        'pipeline': [
+                            {
+                                '$match': {
+                                    '$expr': {
+                                        '$and': [
+                                            {'$eq': ['$admin_id', '$$admin_user_id']},
+                                            {'$gte': ['$date', date_filter]},
+                                            {'$eq': ['$completed', True]} # Only count completed duties
+                                        ]
+                                    }
+                                }
+                            }
+                        ],
+                        'as': 'completed_duties'
                     }
                 },
-                { # 4. Calculate stats based on the 'actions' array
+                # 3. Calculate Scores
+                {
                     '$project': {
                         'admin_name': '$admin_name',
                         'user_id': '$user_id',
                         'broadcasts': {
-                            '$size': {
-                                '$filter': {
-                                    'input': '$actions', 'as': 'action',
-                                    'cond': {'$in': ['$$action', ['broadcast_sent', 'approved_broadcast_sent']]}
-                                }
-                            }
+                            '$size': {'$filter': {'input': '$activities', 'as': 'a', 'cond': {'$in': ['$$a.action', ['broadcast_sent', 'approved_broadcast_sent']]}}}
                         },
                         'approvals': {
-                            '$size': {
-                                '$filter': {
-                                    'input': '$actions', 'as': 'action',
-                                    'cond': {'$in': ['$$action', ['broadcast_approved', 'signal_approved']]}
-                                }
-                            }
+                            '$size': {'$filter': {'input': '$activities', 'as': 'a', 'cond': {'$in': ['$$a.action', ['broadcast_approved', 'signal_approved']]}}}
                         },
-                        'ratings': { # Count ratings (subset of approvals)
-                            '$size': {
-                                '$filter': {
-                                    'input': '$actions', 'as': 'action',
-                                    'cond': {'$in': ['$$action', ['signal_approved']]}
-                                }
-                            }
-                        },
-                        'rejections': {
-                            '$size': {
-                                '$filter': {
-                                    'input': '$actions', 'as': 'action',
-                                    'cond': {'$in': ['$$action', ['broadcast_rejected', 'signal_rejected']]}
-                                }
-                            }
-                        }
+                        'duty_days': {'$size': '$completed_duties'}, # Count of days duties were completed
                     }
                 },
-                { # 5. Add score field
+                {
                     '$addFields': {
-                        # Score: broadcasts + approvals (which includes ratings) + rejections
+                        # Updated Score Formula: Activities + (Duty Days * 3)
+                        # Giving significant weight to completing daily duties
                         'score': {
-                            '$add': ['$broadcasts', '$approvals', '$rejections']
+                            '$add': ['$broadcasts', '$approvals', {'$multiply': ['$duty_days', 3]}]
                         }
                     }
                 },
-                { # 6. Sort
-                    '$sort': {'score': -1}
-                }
+                { '$sort': {'score': -1} }
             ]
-            # Run this aggregation on the 'admins_collection' to include all admins
             return list(self.admins_collection.aggregate(pipeline))
         except Exception as e:
             logger.error(f"Error getting admin performance stats: {e}")
