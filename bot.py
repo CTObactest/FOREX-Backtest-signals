@@ -5138,6 +5138,18 @@ class BroadcastBot:
             
                 return web.json_response({'error': 'Internal Server Error', 'details': str(e)}, status=500)
 
+        async def api_get_news(request):
+            """API Endpoint: Get Forex News"""
+            if not self.finnhub_client:
+                return web.json_response({'error': 'News service disabled'}, status=503)
+            try:
+                # Fetch general forex news
+                news = self.finnhub_client.general_news('forex', min_id=0)
+                return web.json_response(news[:15]) # Return top 15 articles
+            except Exception as e:
+                logger.error(f"API News Error: {e}")
+                return web.json_response({'error': str(e)}, status=500)
+
         async def api_submit_signal(request):
             """API Endpoint: Submit Signal from App (Supports Text & Images)"""
             try:
