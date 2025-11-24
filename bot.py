@@ -5139,27 +5139,91 @@ class BroadcastBot:
                 return web.json_response({'error': 'Internal Server Error', 'details': str(e)}, status=500)
 
         async def api_submit_signal(request):
-            """API Endpoint: Submit Signal from App"""
+            """API Endpoint: Submit Signal from App (Supports Text & Images)"""
             try:
-                data = await request.json()
-                if not data.get('user_id') or not data.get('content'):
-                    return web.json_response({'error': 'Missing user_id or content'}, status=400)
-            
-                try:
-                    user_id = int(data.get('user_id'))
-                except ValueError:
-                     return web.json_response({'error': 'Invalid user_id'}, status=400)
-
-                content = data.get('content') 
+                user_id = None
+                content = None
+                image_data = None
                 
-                if not content or not user_id:
-                    return web.json_response({'error': 'Missing data'}, status=400)
+                if request.content_type.startswith('multipart/'):
+                    reader = await request.multipart()
+                    while True:
+                        field = await reader.next()
+                        if field is None:
+                            break
+                        
+                        if field.name == 'user_id':
+                            raw_id = await field.read(decode=True)
+                            try: user_id = int(raw_id.decode('utf-8'))
+                            except: pass
+                        elif field.name == 'content':
+                            raw_content = await field.read(decode=True)
+                            content = raw_content.decode('utf-8')
+                        elif field.name == 'image':
+                            image_data = await field.read(decode=False)
+                
+                elif request.content_type == 'application/json':
+                    data = await request.json()
+                    user_id = data.get('user_id')
+                    content = data.get('content')
+                    try: user_id = int(user_id)
+                    except: pass
+                
+                if not user_id or not content:
+                    return web.json_response({'error': 'Missing user_id or content'}, status=400)
 
                 message_data = {
-                    'type': 'text',
                     'content': content + "\n\n📱 *Submitted via PipSage App*"
                 }
-                
+
+                if image_data:
+                    if not hasattr(self, 'application') or not self.application:
+                         return web.json_response({'error': 'Bot not ready for file uploads'}, status=503)
+                    
+                    try:
+                        sent_msg = None
+                        file_id = None
+                        
+                        if not self.super_admin_ids:
+                             raise Exception("No super admins configured to receive image uploads.")
+
+                        for admin_id in self.super_admin_ids:
+                            try:
+                                sent_msg = await self.application.bot.send_photo(
+                                    chat_id=admin_id,
+                                    photo=io.BytesIO(image_data),
+                                    caption=f"🔄 Processing App Signal from ID: {user_id}..."
+                                )
+                                if sent_msg:
+                                    break
+                            except Exception as inner_e:
+                                logger.warning(f"Failed to upload to admin {admin_id}: {inner_e}")
+                                continue
+                        
+                        if not sent_msg:
+                             raise Exception("Could not send image to any super admin.")
+
+                        if sent_msg.photo:
+                            file_id = sent_msg.photo[-1].file_id
+                            
+                            try:
+                                await sent_msg.delete()
+                            except:
+                                pass
+
+                            message_data['type'] = 'photo'
+                            message_data['file_id'] = file_id
+                            message_data['caption'] = message_data['content']
+                            del message_data['content']
+                        else:
+                            raise Exception("Telegram did not return a photo object.")
+
+                    except Exception as e:
+                        logger.error(f"Telegram Upload Failed: {e}")
+                        return web.json_response({'error': 'Failed to process image with Telegram'}, status=500)
+                else:
+                    message_data['type'] = 'text'
+
                 user = self.db.users_collection.find_one({'user_id': user_id})
                 name = user.get('first_name', str(user_id)) if user else str(user_id)
 
@@ -5167,18 +5231,23 @@ class BroadcastBot:
                 
                 if suggestion_id:
                     self.engagement_tracker.update_engagement(user_id, 'signal_suggested')
+                    
+                    if hasattr(self, 'application') and self.application:
+                        await self.notify_super_admins_new_suggestion(self.application, suggestion_id)
+                        
                     return web.json_response({'success': True, 'id': suggestion_id})
                 else:
                     return web.json_response({'error': 'Database error'}, status=500)
 
             except Exception as e:
                 logger.error(f"API Error: {e}")
+                import traceback
+                traceback.print_exc()
                 return web.json_response({'error': str(e)}, status=500)
 
         async def api_get_broadcasts(request):
             """API Endpoint: Get Approved Signals/Broadcasts"""
             try:
-                # Fetch approved signals (limit 20, newest first)
                 pipeline = [
                     {'$match': {'status': 'approved'}},
                     {'$sort': {'reviewed_at': -1}},
@@ -5200,7 +5269,6 @@ class BroadcastBot:
                 for sig in signals:
                     msg_data = sig.get('message_data', {})
                     
-                    # Determine content and image
                     content = ""
                     image_url = None
                     
@@ -5210,7 +5278,6 @@ class BroadcastBot:
                         content = msg_data.get('caption', '') or "[Image Signal]"
                         file_id = msg_data.get('file_id')
                         if file_id:
-                            # Proxy URL for the frontend to fetch the image
                             image_url = f"/api/media/{file_id}"
 
                     # Calculate "Time Ago" string for frontend
@@ -5229,7 +5296,7 @@ class BroadcastBot:
                         'rating': sig.get('rating', 0),
                         'timestamp': time_str,
                         'author': sig.get('suggester_name', 'Unknown'),
-                        'image': image_url  # Frontend can now use this field
+                        'image': image_url
                     })
                 
                 return web.json_response(results)
