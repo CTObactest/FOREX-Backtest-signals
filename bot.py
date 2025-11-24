@@ -5246,60 +5246,120 @@ class BroadcastBot:
                 return web.json_response({'error': str(e)}, status=500)
 
         async def api_get_broadcasts(request):
-            """API Endpoint: Get Approved Signals/Broadcasts"""
+            """API Endpoint: Get Unified Feed (Signals + Admin + Education + Leaderboard)"""
             try:
-                pipeline = [
-                    {'$match': {'status': 'approved'}},
-                    {'$sort': {'reviewed_at': -1}},
-                    {'$limit': 20},
-                    {'$project': {
-                        '_id': 1,
-                        'message_data': 1,
-                        'rating': 1,
-                        'reviewed_at': 1,
-                        'suggester_name': 1
-                    }}
-                ]
-                
-                signals = list(self.db.signal_suggestions_collection.aggregate(pipeline))
                 results = []
-                
                 current_time = time.time()
-                
-                for sig in signals:
-                    msg_data = sig.get('message_data', {})
-                    
+
+                def format_time_ago(ts):
+                    diff = current_time - ts
+                    if diff < 60: return "Just now"
+                    elif diff < 3600: return f"{int(diff // 60)} mins ago"
+                    elif diff < 86400: return f"{int(diff // 3600)} hrs ago"
+                    else: return f"{int(diff // 86400)} days ago"
+
+                def extract_data(msg_data):
                     content = ""
                     image_url = None
-                    
                     if msg_data.get('type') == 'text':
                         content = msg_data.get('content', '')
                     elif msg_data.get('type') == 'photo':
-                        content = msg_data.get('caption', '') or "[Image Signal]"
+                        content = msg_data.get('caption', '') or ""
                         file_id = msg_data.get('file_id')
                         if file_id:
                             image_url = f"/api/media/{file_id}"
+                    return content, image_url
 
-                    # Calculate "Time Ago" string for frontend
-                    ts = sig.get('reviewed_at', current_time)
-                    diff = current_time - ts
-                    if diff < 3600:
-                        time_str = f"{int(diff // 60)} mins ago"
-                    elif diff < 86400:
-                        time_str = f"{int(diff // 3600)} hrs ago"
-                    else:
-                        time_str = f"{int(diff // 86400)} days ago"
+                signals_cursor = self.db.signal_suggestions_collection.find(
+                    {'status': 'approved'}
+                ).sort('reviewed_at', -1).limit(15)
 
+                for sig in signals_cursor:
+                    msg_data = sig.get('message_data', {})
+                    content, image_url = extract_data(msg_data)
+                    
                     results.append({
                         'id': str(sig['_id']),
+                        'type': 'signal',
                         'content': content,
                         'rating': sig.get('rating', 0),
-                        'timestamp': time_str,
-                        'author': sig.get('suggester_name', 'Unknown'),
+                        'timestamp_raw': sig.get('reviewed_at', 0),
+                        'timestamp': format_time_ago(sig.get('reviewed_at', 0)),
+                        'author': sig.get('suggester_name', 'Unknown Trader'),
                         'image': image_url
                     })
+                broadcasts_cursor = self.db.broadcast_approvals_collection.find(
+                    {'status': 'approved'}
+                ).sort('reviewed_at', -1).limit(10)
+
+                for bc in broadcasts_cursor:
+                    msg_data = bc.get('message_data', {})
+                    content, image_url = extract_data(msg_data)
+                    
+                    if not content.startswith("📢"):
+                        target = bc.get('target', 'Announcement').replace('_', ' ').title()
+                        content = f"📢 {target}\n\n{content}"
+
+                    results.append({
+                        'id': str(bc['_id']),
+                        'type': 'broadcast',
+                        'content': content,
+                        'rating': 0,
+                        'timestamp_raw': bc.get('reviewed_at', 0),
+                        'timestamp': format_time_ago(bc.get('reviewed_at', 0)),
+                        'author': 'PipSage Team', 
+                        'image': image_url
+                    })
+
+                if hasattr(self, 'edu_content_manager') and self.edu_content_manager:
+                    edu_cursor = self.edu_content_manager.educational_content_collection.find(
+                        {'type': {'$in': ['text', 'photo']}} 
+                    ).sort('saved_at', -1).limit(5)
+
+                    for edu in edu_cursor:
+                        content = edu.get('content') if edu['type'] == 'text' else edu.get('caption', '')
+                        image_url = None
+                        if edu['type'] == 'photo' and edu.get('file_id'):
+                            image_url = f"/api/media/{edu['file_id']}"
+
+                        results.append({
+                            'id': f"edu_{edu.get('message_id')}",
+                            'type': 'education',
+                            'content': f"📚 <b>Daily Tip</b>\n\n{content}",
+                            'rating': 0,
+                            'timestamp_raw': edu.get('saved_at', 0),
+                            'timestamp': format_time_ago(edu.get('saved_at', 0)),
+                            'author': 'PipSage Education',
+                            'image': image_url
+                        })
+
+                stats = self.db.get_suggester_stats('weekly')
+                if stats:
+                    lb_text = "🏆 <b>Top Traders (This Week)</b>\n\n"
+                    medals = ["🥇", "🥈", "🥉"]
+                    for i, stat in enumerate(stats[:5]):
+                        rank = medals[i] if i < 3 else f"#{i+1}"
+                        name = stat['suggester_name']
+                        lb_text += f"{rank} {name}: {stat['average_rating']:.1f}⭐ ({stat['signal_count']} signals)\n"
+                    
+                    results.append({
+                        'id': 'weekly_leaderboard',
+                        'type': 'leaderboard',
+                        'content': lb_text,
+                        'rating': 0,
+                        'timestamp_raw': current_time,
+                        'timestamp': 'Live Now',
+                        'author': 'System',
+                        'image': None
+                    })
+
+                results.sort(key=lambda x: x['timestamp_raw'], reverse=True)
                 
-                return web.json_response(results)
+                final_results = results[:50]
+                for res in final_results:
+                    if 'timestamp_raw' in res: del res['timestamp_raw']
+
+                return web.json_response(final_results)
             except Exception as e:
                 logger.error(f"API Error (Broadcasts): {e}")
                 return web.json_response({'error': str(e)}, status=500)
@@ -5311,22 +5371,86 @@ class BroadcastBot:
                 if not file_id:
                     return web.Response(status=400, text="Missing file_id")
 
-                # Retrieve the file object from Telegram using the bot instance
                 if not hasattr(self, 'application') or not self.application:
                     return web.Response(status=503, text="Bot not initialized")
 
                 new_file = await self.application.bot.get_file(file_id)
                 
-                # Download to memory buffer
                 bio = io.BytesIO()
                 await new_file.download_to_memory(bio)
                 bio.seek(0)
                 
-                # Return as standard image response
                 return web.Response(body=bio.getvalue(), content_type='image/jpeg')
             except Exception as e:
                 logger.error(f"Media API Error: {e}")
                 return web.Response(status=404, text="Image not found")
+
+        async def api_update_settings(request):
+            """API Endpoint: Update User Notification Settings"""
+            try:
+                data = await request.json()
+                user_id = data.get('user_id')
+                settings = data.get('settings')
+
+                if not user_id or not settings:
+                    return web.json_response({'error': 'Missing user_id or settings'}, status=400)
+                
+                try:
+                    user_id = int(user_id)
+                except ValueError:
+                    return web.json_response({'error': 'Invalid user_id'}, status=400)
+
+                update_fields = {}
+                
+                if 'notifications' in settings:
+                    update_fields['notifications.broadcasts'] = settings['notifications']
+                
+                if 'signals' in settings:
+                    update_fields['notifications.signals'] = settings['signals']
+                
+                if 'leaderboard' in settings:
+                    update_fields['notifications.leaderboards'] = settings['leaderboard']
+                
+                if 'tips' in settings:
+                    update_fields['notifications.tips'] = settings['tips']
+
+                result = self.db.users_collection.update_one(
+                    {'user_id': user_id},
+                    {'$set': update_fields}
+                )
+
+                if result.matched_count == 0:
+                    return web.json_response({'error': 'User not found'}, status=404)
+
+                return web.json_response({'success': True})
+
+            except Exception as e:
+                logger.error(f"API Settings Update Error: {e}")
+                return web.json_response({'error': str(e)}, status=500)
+        
+        async def api_get_settings(request):
+             """API Endpoint: Get User Settings"""
+             try:
+                user_id = request.match_info['user_id']
+                try: user_id = int(user_id)
+                except: return web.json_response({'error': 'Invalid ID'}, status=400)
+
+                user = self.db.users_collection.find_one({'user_id': user_id})
+                if not user:
+                    return web.json_response({'error': 'User not found'}, status=404)
+                
+                prefs = user.get('notifications', {})
+                
+
+                response_data = {
+                    'notifications': prefs.get('broadcasts', True),
+                    'signals': prefs.get('signals', True),
+                    'leaderboard': prefs.get('leaderboards', True),
+                    'tips': prefs.get('tips', True)
+                }
+                return web.json_response(response_data)
+             except Exception as e:
+                 return web.json_response({'error': str(e)}, status=500)
 
         async def health_check(request):
             return web.Response(text="PipSage API Running", status=200)
@@ -5337,6 +5461,8 @@ class BroadcastBot:
         app.router.add_post('/api/signals', api_submit_signal)
         app.router.add_get('/api/broadcasts', api_get_broadcasts)
         app.router.add_get('/api/media/{file_id}', api_get_media)
+        app.router.add_post('/api/settings', api_update_settings)
+        app.router.add_get('/api/settings/{user_id}', api_get_settings)
         
         import aiohttp_cors
         cors = aiohttp_cors.setup(app, defaults={
