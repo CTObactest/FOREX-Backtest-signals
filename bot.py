@@ -5059,8 +5059,7 @@ class BroadcastBot:
     def create_api_server(self):
         """Create API server for Mobile App Integration"""
         
-        async def api_get_stats(self, request):
-            """API Endpoint: Get User Stats & Dashboard Data (Crash-Proof)"""
+        async def api_get_stats(request):
             try:
                 try:
                     user_id = int(request.match_info['user_id'])
@@ -5071,7 +5070,7 @@ class BroadcastBot:
             
                 if not user:
                     print(f"⚠️ Warning: User ID {user_id} not found in DB. Using defaults.")
-                    user = {} # Empty dict to prevent crashes below
+                    user = {}
                     username = "Unknown Trader"
                 else:
                     username = user.get('first_name') or user.get('username') or f"Trader {user_id}"
@@ -5143,7 +5142,14 @@ class BroadcastBot:
             """API Endpoint: Submit Signal from App"""
             try:
                 data = await request.json()
-                user_id = int(data.get('user_id'))
+                if not data.get('user_id') or not data.get('content'):
+                    return web.json_response({'error': 'Missing user_id or content'}, status=400)
+            
+                try:
+                    user_id = int(data.get('user_id'))
+                except ValueError:
+                     return web.json_response({'error': 'Invalid user_id'}, status=400)
+
                 content = data.get('content') 
                 
                 if not content or not user_id:
@@ -6804,6 +6810,8 @@ def main():
 
     bot = BroadcastBot(BOT_TOKEN, admin_ids, mongo_handler)
     application = bot.create_application()
+
+    bot.application = application
 
     port = int(os.getenv('PORT', 8000))
 
