@@ -4,7 +4,8 @@ import asyncio
 from typing import Dict, List, Optional
 from aiohttp import web
 import threading
-from datetime import datetime, timedelta, time as dt_time, timezone # <-- FIX 1: Renamed import
+from datetime import datetime, timedelta, time as dt_time, timezone
+import textwrap
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import BadRequest
 from telegram.ext import (
@@ -31,27 +32,23 @@ import random
 from typing import List, Dict, Optional
 import tweepy
 
-# Enable logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# --- Finnhub API Configuration ---
 FINNHUB_API_KEY = os.getenv('FINNHUB_API_KEY')
 if not FINNHUB_API_KEY:
     logger.warning("FINNHUB_API_KEY is not set. /news and /calendar commands will be disabled.")
-# ---------------------------------
 
-# Conversation states
+
 WAITING_INITIAL_PLATFORM, WAITING_MESSAGE, WAITING_BUTTONS, WAITING_PROTECTION, WAITING_TARGET = range(5)
 WAITING_TEMPLATE_NAME, WAITING_TEMPLATE_MESSAGE, WAITING_TEMPLATE_CATEGORY = range(5, 8)
 WAITING_SCHEDULE_TIME, WAITING_SCHEDULE_REPEAT = range(8, 10)
 WAITING_ADMIN_ID, WAITING_ADMIN_ROLE = range(10, 12)
 WAITING_SIGNAL_MESSAGE = 12
 
-# New states for verification
 (
     WAITING_VIP_GROUP,
     WAITING_ACCOUNT_CREATION_CONFIRMATION,
@@ -65,7 +62,7 @@ WAITING_SIGNAL_MESSAGE = 12
     WAITING_TELEGRAM_ID,
     WAITING_DECLINE_REASON,
     WAITING_SIGNAL_RATING,
-    WAITING_SIGNAL_REJECTION_REASON,# New state for rating signals
+    WAITING_SIGNAL_REJECTION_REASON,
 ) = range(12, 25)
 
 
@@ -127,7 +124,6 @@ class PerformanceTransparency:
     async def show_verified_performance(update: Update, context: ContextTypes.DEFAULT_TYPE, db):
         """Display verified signal performance - builds trust"""
         
-        # Calculate last 30 days performance
         thirty_days_ago = time.time() - (30 * 86400)
         
         pipeline = [
@@ -220,25 +216,22 @@ class AchievementSystem:
         
         user = db.users_collection.find_one({'user_id': user_id})
         if not user:
-            return [] # User not found
+            return []
             
         current_achievements = set(user.get('achievements', []))
-        
-        # Check conditions
         signal_stats = db.get_user_signal_stats(user_id)
         avg_rating = db.get_user_average_rating(user_id)
         
         new_achievements = []
         
-        # First signal
+       
         if 'first_signal' not in current_achievements and signal_stats['total'] >= 1:
             new_achievements.append('first_signal')
         
-        # First approval
+       
         if 'approved_signal' not in current_achievements and signal_stats['approved'] >= 1:
             new_achievements.append('approved_signal')
         
-        # Check for 5-star rating
         has_five_star = db.signal_suggestions_collection.find_one({
             'suggested_by': user_id,
             'rating': 5
@@ -246,18 +239,16 @@ class AchievementSystem:
         if 'five_star' not in current_achievements and has_five_star:
             new_achievements.append('five_star')
         
-        # Elite status
+       
         if 'elite' not in current_achievements and avg_rating >= 4.5 and signal_stats['approved'] >= 20:
             new_achievements.append('elite')
         
-        # Award new achievements
         if new_achievements:
             db.users_collection.update_one(
                 {'user_id': user_id},
                 {'$addToSet': {'achievements': {'$each': new_achievements}}}
             )
             
-            # Notify user
             for achievement_key in new_achievements:
                 achievement = AchievementSystem.ACHIEVEMENTS[achievement_key]
                 message = (
@@ -290,17 +281,15 @@ class ReferralSystem:
     async def process_referral(new_user_id: int, referrer_id: int, db, context):
         """Handle new user from referral"""
         
-        # Award referrer
         db.users_collection.update_one(
             {'user_id': referrer_id},
             {
                 '$inc': {'referrals': 1},
                 '$push': {'referred_users': new_user_id}
             },
-            upsert=True # Ensure referrer doc exists
+            upsert=True
         )
         
-        # Check referral milestones
         referrer = db.users_collection.find_one({'user_id': referrer_id})
         referral_count = referrer.get('referrals', 0)
         
@@ -328,7 +317,6 @@ class ReferralSystem:
             except:
                 pass
         
-        # Thank new user
         welcome_message = (
             f"👋 Welcome! You were referred by user {referrer_id}.\n\n"
             f"Both of you will earn rewards as you use PipSage!\n\n"
@@ -351,7 +339,6 @@ class ReferralSystem:
         referral_count = user.get('referrals', 0) if user else 0
         link = ReferralSystem.generate_referral_link(user_id, bot_username)
         
-        # Calculate next milestone
         milestones = [1, 5, 10, 25, 50]
         next_milestone = next((m for m in milestones if m > referral_count), 50)
         
@@ -427,11 +414,10 @@ class PromotionManager:
     async def announce_promo(context: ContextTypes.DEFAULT_TYPE, db):
         """Announce promotion ONCE to active users"""
         
-        # Only to users who haven't subscribed yet
         non_subscribers = db.users_collection.find({
             'user_id': {'$nin': list(db.get_all_subscribers())},
-            'last_activity': {'$gte': time.time() - (7 * 86400)},  # Active in last 7 days
-            'promo_nov_2024_seen': {'$ne': True}  # Haven't seen this promo
+            'last_activity': {'$gte': time.time() - (7 * 86400)}, 
+            'promo_nov_2024_seen': {'$ne': True} 
         })
         
         promo_message = (
@@ -444,7 +430,7 @@ class PromotionManager:
             
             "Start: /subscribe\n\n"
             
-            "<i>Expires: November 24, 2025</i>" # Updated year
+            "<i>Expires: November 24, 2025</i>" 
         )
         
         sent = 0
@@ -456,7 +442,6 @@ class PromotionManager:
                     parse_mode=ParseMode.HTML
                 )
                 
-                # Mark as seen
                 db.users_collection.update_one(
                     {'user_id': user['user_id']},
                     {'$set': {'promo_nov_2024_seen': True}}
@@ -488,16 +473,15 @@ class BroadcastFrequencyManager:
         
         last_broadcast_time = last_broadcast['timestamp'] if last_broadcast else 0
         
-        # Limits per role
         role = self.db.get_admin_role(admin_id)
         limits_seconds = {
-            AdminRole.SUPER_ADMIN: 30,  # 30 seconds
-            AdminRole.ADMIN: 300,       # 5 minutes
-            AdminRole.MODERATOR: 180,   # 3 minutes
-            AdminRole.BROADCASTER: 600  # 10 minutes
+            AdminRole.SUPER_ADMIN: 30,  
+            AdminRole.ADMIN: 300,       
+            AdminRole.MODERATOR: 180,  
+            AdminRole.BROADCASTER: 600 
         }
         
-        limit = limits_seconds.get(role, 300) # Default 5 mins
+        limit = limits_seconds.get(role, 300)
         
         time_since_last = time.time() - last_broadcast_time
         
@@ -522,31 +506,26 @@ class BroadcastQualityChecker:
             content = message_data['caption']
         
         if not content:
-             return True, [] # No text to check
+             return True, [] 
 
-        # Too short
         if len(content) < 10:
             issues.append("Message too short (minimum 10 characters)")
         
-        # All caps (spam indicator)
         if content.isupper() and len(content) > 50:
             issues.append("Avoid ALL CAPS messages")
         
-        # Too many emojis (basic check)
         emoji_count = 0
         for char in content:
-            if char > '\u231a': # Simple check for emoji range
+            if char > '\u231a':
                 emoji_count += 1
         
         if emoji_count > 15:
             issues.append("Too many emojis (max 15)")
         
-        # Spam keywords
         spam_words = ['100% guaranteed', 'act fast', 'limited time only']
         if any(word.lower() in content.lower() for word in spam_words):
             issues.append("Message contains spam-like phrases (e.g., '100% guaranteed')")
         
-        # Too many links
         link_count = content.lower().count('http')
         if link_count > 3:
             issues.append(f"Too many links ({link_count}). Max 3 per message.")
@@ -578,7 +557,6 @@ class UserEngagementTracker:
         
         engagement = user.get('engagement', {})
         
-        # Weighted scoring
         score = (
             engagement.get('command_used', 0) * 2 +
             engagement.get('signal_suggested', 0) * 10 +
@@ -586,19 +564,17 @@ class UserEngagementTracker:
             engagement.get('vip_subscribed', 0) * 30
         )
         
-        # Check recency
         last_activity = user.get('last_activity', 0)
         days_inactive = (time.time() - last_activity) / 86400
         
         if days_inactive > 30:
-            score *= 0.5  # Decay for inactive users
+            score *= 0.5
         
         return min(int(score), 100)
     
     async def re_engage_inactive_users(self, context: ContextTypes.DEFAULT_TYPE):
         """Gentle re-engagement for inactive users"""
         
-        # Find users inactive for 7+ days but less than 30
         cutoff_recent = time.time() - (7 * 86400)
         cutoff_old = time.time() - (30 * 86400)
         
@@ -628,13 +604,12 @@ class UserEngagementTracker:
                     text=message
                 )
                 
-                # Mark as re-engaged (don't spam them again)
                 self.db.users_collection.update_one(
                     {'user_id': user['user_id']},
                     {'$set': {'re_engaged': True}}
                 )
                 
-                await asyncio.sleep(1)  # Slow rate for re-engagement
+                await asyncio.sleep(1) 
             except:
                 pass
 
@@ -662,7 +637,7 @@ class NotificationManager:
         
         user_prefs = user.get('notifications', {})
         prefs = self.DEFAULT_PREFS.copy()
-        prefs.update(user_prefs) # Overwrite defaults with user's choices
+        prefs.update(user_prefs)
         
         return prefs
 
@@ -690,7 +665,7 @@ class MongoDBHandler:
         self.activity_logs_collection = None
         self.broadcast_approvals_collection = None
         self.signal_suggestions_collection = None
-        self.used_cr_numbers_collection = None  # New collection for CR numbers
+        self.used_cr_numbers_collection = None  
         self.connect()
 
     def connect(self):
@@ -702,7 +677,6 @@ class MongoDBHandler:
                 connectTimeoutMS=10000,
                 socketTimeoutMS=10000
             )
-            # Test the connection
             self.client.admin.command('ping')
             self.db = self.client['telegram_bot']
             self.users_collection = self.db['users']
@@ -713,9 +687,7 @@ class MongoDBHandler:
             self.activity_logs_collection = self.db['activity_logs']
             self.broadcast_approvals_collection = self.db['broadcast_approvals']
             self.signal_suggestions_collection = self.db['signal_suggestions']
-            self.used_cr_numbers_collection = self.db['used_cr_numbers'] # New collection
-
-            # Create indexes
+            self.used_cr_numbers_collection = self.db['used_cr_numbers'] 
             self.users_collection.create_index('user_id', unique=True)
             self.subscribers_collection.create_index('user_id', unique=True)
             self.admins_collection.create_index('user_id', unique=True)
@@ -724,7 +696,7 @@ class MongoDBHandler:
             self.activity_logs_collection.create_index([('timestamp', -1)])
             self.broadcast_approvals_collection.create_index('status')
             self.signal_suggestions_collection.create_index('status')
-            self.used_cr_numbers_collection.create_index('cr_number', unique=True) # Index for CR numbers
+            self.used_cr_numbers_collection.create_index('cr_number', unique=True) 
 
             logger.info("Successfully connected to MongoDB")
         except (ConnectionFailure, ServerSelectionTimeoutError) as e:
@@ -741,7 +713,7 @@ class MongoDBHandler:
                         'user_id': user_id,
                         'username': username,
                         'first_name': first_name,
-                        'last_activity': time.time() # <-- MODIFIED THIS LINE
+                        'last_activity': time.time()
                     },
                     '$setOnInsert': {
                         'created_at': time.time(),
@@ -749,7 +721,7 @@ class MongoDBHandler:
                         'referrals': 0,
                         'daily_tips_enabled': True,
                         'leaderboard_public': True
-                    } # <-- ADDED 'setOnInsert' fields
+                    }
                 },
                 upsert=True
             )
@@ -845,11 +817,9 @@ class MongoDBHandler:
             logger.error(f"Error getting stats: {e}")
             return {}
 
-    # Admin Management Methods
     def add_admin(self, user_id: int, role: AdminRole, added_by: int):
         """Add an admin with role"""
         try:
-            # Try to get admin name from users collection
             user_info = self.users_collection.find_one({'user_id': user_id})
             admin_name = str(user_id)
             if user_info:
@@ -860,7 +830,7 @@ class MongoDBHandler:
                 {
                     '$set': {
                         'user_id': user_id,
-                        'name': admin_name, # Store admin name
+                        'name': admin_name,
                         'role': role.value,
                         'added_by': added_by,
                         'added_at': time.time()
@@ -912,7 +882,6 @@ class MongoDBHandler:
             return False
         return permission in ROLE_PERMISSIONS.get(role, [])
 
-    # Activity Logging
     def log_activity(self, user_id: int, action: str, details: Dict = None):
         """Log admin activity"""
         try:
@@ -962,7 +931,6 @@ class MongoDBHandler:
             logger.error(f"Error getting admin stats: {e}")
             return {}
 
-    # Broadcast Approval Methods
     def create_broadcast_approval(self, message_data: Dict, created_by: int,
                                   creator_name: str, target: str, scheduled: bool = False) -> str:
         """Create a broadcast approval request"""
@@ -1022,7 +990,6 @@ class MongoDBHandler:
             logger.error(f"Error updating approval status: {e}")
             return False
 
-    # Signal Suggestion Methods
     def create_signal_suggestion(self, message_data: Dict, suggested_by: int,
                                 suggester_name: str) -> str:
         """Create a signal suggestion"""
@@ -1086,7 +1053,6 @@ class MongoDBHandler:
             logger.error(f"Error updating suggestion status: {e}")
             return False
 
-    # Template Management
     def save_template(self, name: str, message_data: Dict, category: str, created_by: int):
         """Save a message template"""
         try:
@@ -1148,7 +1114,6 @@ class MongoDBHandler:
         except Exception as e:
             logger.error(f"Error incrementing template usage: {e}")
 
-    # Scheduled Broadcasts
     def schedule_broadcast(self, message_data: Dict, scheduled_time: float,
                           repeat: str, created_by: int, target: str):
         """Schedule a broadcast"""
@@ -1222,15 +1187,13 @@ class MongoDBHandler:
             logger.error(f"Error cancelling scheduled broadcast: {e}")
             return False
 
-    # New methods for CR Number checks
     def is_cr_number_used(self, cr_number: str) -> bool:
         """Check if a CR number has already been used for verification"""
         try:
             return self.used_cr_numbers_collection.find_one({'cr_number': cr_number}) is not None
         except Exception as e:
             logger.error(f"Error checking CR number {cr_number}: {e}")
-            return False # Fail safe, but log error
-
+            return False 
     def mark_cr_number_as_used(self, cr_number: str, user_id: int):
         """Mark a CR number as used by a specific user"""
         try:
@@ -1244,7 +1207,6 @@ class MongoDBHandler:
             logger.error(f"Error marking CR number {cr_number} as used: {e}")
             return False
 
-    # New methods for Leaderboards
     def get_suggester_stats(self, time_frame: str) -> List[Dict]:
         """Get signal suggester stats for a given time frame (weekly/monthly)"""
         try:
@@ -1279,15 +1241,13 @@ class MongoDBHandler:
                     }
                 },
                 {
-                    '$limit': 10  # Top 10
+                    '$limit': 10  
                 }
             ]
             return list(self.signal_suggestions_collection.aggregate(pipeline))
         except Exception as e:
             logger.error(f"Error getting suggester stats: {e}")
             return []
-
-    # In MongoDBHandler class
 
     def get_admin_performance_stats(self, time_frame: str) -> List[Dict]:
         """Get admin performance stats including Duty Consistency"""
@@ -1304,7 +1264,7 @@ class MongoDBHandler:
 
             pipeline = [
                 { '$project': { 'user_id': '$user_id', 'admin_name': '$name' } },
-                # 1. Lookup Activities (Existing)
+                
                 {
                     '$lookup': {
                         'from': 'activity_logs',
@@ -1324,7 +1284,7 @@ class MongoDBHandler:
                         'as': 'activities'
                     }
                 },
-                # 2. Lookup Duty Completions (NEW)
+                
                 {
                     '$lookup': {
                         'from': 'admin_duties',
@@ -1345,7 +1305,7 @@ class MongoDBHandler:
                         'as': 'completed_duties'
                     }
                 },
-                # 3. Calculate Scores
+                
                 {
                     '$project': {
                         'admin_name': '$admin_name',
@@ -1361,8 +1321,7 @@ class MongoDBHandler:
                 },
                 {
                     '$addFields': {
-                        # Updated Score Formula: Activities + (Duty Days * 3)
-                        # Giving significant weight to completing daily duties
+                        
                         'score': {
                             '$add': ['$broadcasts', '$approvals', {'$multiply': ['$duty_days', 3]}]
                         }
@@ -1378,9 +1337,6 @@ class MongoDBHandler:
     def get_user_suggestions_today(self, user_id: int) -> int:
         """Count user's suggestions since midnight UTC today"""
         try:
-            # Get the start of today (midnight) in UTC
-            # Note: dt_time and timezone should be imported from datetime at the top of your file
-            # (which they already are)
             today_utc = datetime.now(timezone.utc).date()
             start_of_today_timestamp = datetime.combine(today_utc, dt_time(0, 0, tzinfo=timezone.utc)).timestamp()
 
@@ -1391,7 +1347,7 @@ class MongoDBHandler:
             return count
         except Exception as e:
             logger.error(f"Error counting today's suggestions for {user_id}: {e}")
-            return 0 # Fail safe
+            return 0 
 
     def get_user_average_rating(self, user_id: int) -> float:
         """Get user's average rating from approved signals"""
@@ -1414,10 +1370,10 @@ class MongoDBHandler:
             result = list(self.signal_suggestions_collection.aggregate(pipeline))
             if result:
                 return result[0]['average_rating']
-            return 0.0 # No rated signals
+            return 0.0 
         except Exception as e:
             logger.error(f"Error getting user average rating for {user_id}: {e}")
-            return 0.0 # Fail safe
+            return 0.0 
 
     def get_user_signal_stats(self, user_id: int) -> Dict:
         """Get a user's signal suggestion stats"""
@@ -1446,7 +1402,6 @@ class MongoDBHandler:
     def get_user_suggester_rank(self, user_id: int) -> (int, int):
         """Get a user's rank on the all-time suggester leaderboard"""
         try:
-            # This pipeline ranks all users by average rating, then signal count
             pipeline = [
                 {
                     '$match': {
@@ -1477,16 +1432,15 @@ class MongoDBHandler:
             result = list(self.signal_suggestions_collection.aggregate(pipeline))
             
             if not result or 'users' not in result[0]:
-                return 0, 0 # No ranked users
+                return 0, 0 
 
             total_ranked_users = len(result[0]['users'])
             
             try:
-                # Find the user's 1-based index (rank)
                 rank = [i for i, user in enumerate(result[0]['users']) if user['user_id'] == user_id][0] + 1
                 return rank, total_ranked_users
             except IndexError:
-                return 0, total_ranked_users # User is not ranked
+                return 0, total_ranked_users 
 
         except Exception as e:
             logger.error(f"Error getting user suggester rank for {user_id}: {e}")
@@ -1552,13 +1506,11 @@ class EducationalContentManager:
         self.db = db
         self.channel_id = channel_id
         self.educational_content_collection = self.db['educational_content']
-        
-        # FIX: Use a composite unique index with an explicit name to avoid deployment conflicts
         self.educational_content_collection.create_index(
             [('message_id', 1), ('chat_id', 1)], 
             unique=True,
             name='educational_content_id_chat_unique',
-            background=True # Prevents blocking on startup
+            background=True 
         )
         
     async def process_and_save(self, message):
@@ -1584,7 +1536,7 @@ class EducationalContentManager:
             content_type = 'document'
             file_id = message.document.file_id
         else:
-            return False # Unsupported type
+            return False 
 
         entry = {
             'message_id': message.message_id,
@@ -1597,7 +1549,6 @@ class EducationalContentManager:
         }
 
         try:
-            # Use update_one with upsert to prevent duplicates
             self.educational_content_collection.update_one(
                 {'message_id': message.message_id, 'chat_id': message.chat.id},
                 {'$set': entry},
@@ -1771,8 +1722,6 @@ class AdminDutyManager:
     def __init__(self, db):
         self.db = db
         self.admin_duties_collection = self.db['admin_duties']
-        
-        # Create indexes
         self.CONTINUOUS_DUTIES = ['signal_review', 'broadcast_approval', 'user_engagement', 'community_moderation']
         self.FINITE_TASKS = ['content_creation', 'quality_control', 'analytics_reporting']
         self.admin_duties_collection.create_index([('date', -1)])
@@ -1784,8 +1733,6 @@ class AdminDutyManager:
         Called whenever an admin does work that counts toward duties.
         """
         date_key = self.get_date_key()
-        
-        # Map actions to duty categories
         action_to_duty = {
             'signal_approved': 'signal_review',
             'signal_rejected': 'signal_review',
@@ -1811,7 +1758,6 @@ class AdminDutyManager:
         if not duties_to_credit:
             return False
         
-        # Add action record to each matching duty
         for duty in duties_to_credit:
             self.admin_duties_collection.update_one(
                 {'_id': duty['_id']},
@@ -1838,24 +1784,21 @@ class AdminDutyManager:
             end_timestamp = start_timestamp + 86400
             
             if duty_category == 'signal_review':
-                # Check if signals were submitted
                 submitted = self.db['signal_suggestions'].count_documents({
                     'created_at': {'$gte': start_timestamp, '$lt': end_timestamp}
                 })
                 return submitted > 0
             
             elif duty_category == 'broadcast_approval':
-                # Check if broadcasts needed approval
                 submitted = self.db['broadcast_approvals'].count_documents({
                     'created_at': {'$gte': start_timestamp, '$lt': end_timestamp}
                 })
                 return submitted > 0
-            
-            # Other categories always have work (engagement, content, etc.)
+                
             return True
         except Exception as e:
             logger.error(f"Error checking work existence: {e}")
-            return True # Default to True to be safe
+            return True 
 
     def auto_complete_duties_with_no_work(self) -> Dict[str, Dict]:
         """
@@ -1873,7 +1816,7 @@ class AdminDutyManager:
         
         results = {
             'auto_completed_no_work': {},
-            'verified_complete': {}, # New category for work done & verified by system
+            'verified_complete': {},
             'left_incomplete': {}
         }
         
@@ -1882,13 +1825,9 @@ class AdminDutyManager:
             admin_id = duty['admin_id']
             admin_name = duty['admin_name']
             action_count = duty.get('action_count', 0)
-            
-            # Check if work existed in the system
             had_work = self._check_if_work_existed(duty_category, date_key)
             
             if not had_work:
-                # Scenario 1: No work existed at all.
-                # Mark as completed (Exempt)
                 self.admin_duties_collection.update_one(
                     {'_id': duty['_id']},
                     {
@@ -1904,15 +1843,13 @@ class AdminDutyManager:
                 results['auto_completed_no_work'].setdefault(duty_category, []).append(admin_name)
             
             elif action_count > 0:
-                # Scenario 2: Work existed AND this admin did actions.
-                # This is a "System Verified Completion" (Good Job)
                 self.admin_duties_collection.update_one(
                     {'_id': duty['_id']},
                     {
                         '$set': {
                             'completed': True,
-                            'auto_completed': False, # It wasn't "auto" in a bad way, it was verified
-                            'system_verified': True, # New flag
+                            'auto_completed': False,
+                            'system_verified': True, 
                             'completed_at': time.time(),
                             'completion_notes': f'System Verified: {action_count} actions recorded.'
                         }
@@ -1921,7 +1858,6 @@ class AdminDutyManager:
                 results['verified_complete'].setdefault(duty_category, []).append(f"{admin_name} ({action_count} actions)")
                 
             else:
-                # Scenario 3: Work existed but admin did nothing (and didn't mark complete)
                 results['left_incomplete'].setdefault(duty_category, []).append(admin_name)
         
         return results
@@ -1940,7 +1876,7 @@ class AdminDutyManager:
                     'completed_duties': {
                         '$sum': {'$cond': [{'$eq': ['$completed', True]}, 1, 0]}
                     },
-                    # Count manually completed
+                    
                     'manual_completed': {
                         '$sum': {'$cond': [
                             {'$and': [
@@ -1987,7 +1923,6 @@ class AdminDutyManager:
         """
         date_key = self.get_date_key()
         
-        # Filter active admins (not broadcasters)
         eligible_admins = [
             admin for admin in admin_list 
             if admin['role'] in ['super_admin', 'admin', 'moderator']
@@ -1996,21 +1931,17 @@ class AdminDutyManager:
         if not eligible_admins:
             logger.warning("No eligible admins for duty assignment")
             return {}
-        
-        # Get previous assignments to ensure rotation
+            
         yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime('%Y-%m-%d')
         yesterday_duties = list(self.admin_duties_collection.find({'date': yesterday}))
         
-        # Create dict of {admin_id: yesterday_duty_category}
         last_assignments = {
             duty['admin_id']: duty['duty_category'] 
             for duty in yesterday_duties
         }
         
-        # Get all duty categories
         duty_categories = list(self.DUTY_CATEGORIES.keys())
         
-        # Shuffle for randomness
         random.shuffle(eligible_admins)
         random.shuffle(duty_categories)
         
@@ -2064,7 +1995,6 @@ class AdminDutyManager:
                 'admin_role': admin['role']
             }
         
-        # Store assignments in database
         for admin_id, duty_data in assignments.items():
             self.admin_duties_collection.insert_one({
                 'date': date_key,
@@ -2156,15 +2086,29 @@ class TwitterIntegration:
                 access_token=self.access_token,
                 access_token_secret=self.access_secret
             )
-            self.api = tweepy.API(auth)  # For media uploads
+            self.api = tweepy.API(auth)
             logger.info("Twitter integration enabled")
         else:
             self.client = None
             self.api = None
             logger.warning("Twitter credentials not set")
 
+    def _split_text(self, text: str) -> List[str]:
+        """Split text into chunks for Twitter threading"""
+        if not text:
+            return []
+            
+        limit = 280
+        if len(text) <= limit:
+            return [text]
+            
+        chunks = textwrap.wrap(text, width=270, replace_whitespace=False, drop_whitespace=False)
+        total = len(chunks)
+        
+        return [f"{chunk} ({i+1}/{total})" for i, chunk in enumerate(chunks)]
+
     async def post_general_broadcast(self, context, message_data: Dict) -> Optional[str]:
-        """Post a general broadcast to Twitter"""
+        """Post a general broadcast to Twitter with threading support"""
         if not self.client:
             return None
         
@@ -2184,14 +2128,31 @@ class TwitterIntegration:
                 if message_data.get('file_id'):
                     media_ids = await self._upload_telegram_video(context, message_data['file_id'])
             
-            if len(text_content) > 280:
-                text_content = text_content[:277] + "..."
+            tweets = self._split_text(text_content)
+            
+            if not tweets and media_ids:
+                tweets = [""]
 
-            response = self.client.create_tweet(
-                text=text_content,
-                media_ids=media_ids if media_ids else None
-            )
-            return f"https://twitter.com/user/status/{response.data['id']}"
+            previous_tweet_id = None
+            first_tweet_url = None
+            
+            for i, tweet_text in enumerate(tweets):
+                kwargs = {'text': tweet_text}
+                
+                if i == 0 and media_ids:
+                    kwargs['media_ids'] = media_ids
+                
+                if previous_tweet_id:
+                    kwargs['in_reply_to_tweet_id'] = previous_tweet_id
+                
+                response = self.client.create_tweet(**kwargs)
+                
+                previous_tweet_id = response.data['id']
+                
+                if i == 0:
+                    first_tweet_url = f"https://twitter.com/user/status/{response.data['id']}"
+
+            return first_tweet_url
             
         except Exception as e:
             logger.error(f"Failed to post broadcast to Twitter: {e}")
@@ -2200,16 +2161,11 @@ class TwitterIntegration:
     async def _upload_telegram_photo(self, context, file_id):
         """Download photo from Telegram and upload to Twitter"""
         try:
-            # 1. Get file info from Telegram
             new_file = await context.bot.get_file(file_id)
             
-            # 2. Download to memory buffer
             bio = io.BytesIO()
             await new_file.download_to_memory(bio)
             bio.seek(0)
-            
-            # 3. Upload to Twitter (v1.1 API)
-            # Note: tweepy.API calls are synchronous, might block slightly but usually fine for images
             media = self.api.media_upload(filename="signal.jpg", file=bio)
             return [media.media_id]
         except Exception as e:
@@ -2244,16 +2200,13 @@ class TwitterIntegration:
             message_data = suggestion['message_data']
             suggester = suggestion['suggester_name']
             rating = suggestion.get('rating', 0)
-            
-            # Format tweet
+        
             tweet_text = self._format_signal_tweet(message_data, suggester, rating)
             
-            # Handle media
             media_ids = []
             if message_data['type'] == 'photo':
                 media_ids = await self._upload_telegram_photo(context, message_data['file_id'])
             
-            # Post tweet
             response = self.client.create_tweet(
                 text=tweet_text,
                 media_ids=media_ids if media_ids else None
@@ -2267,13 +2220,12 @@ class TwitterIntegration:
             return None
     
     def _format_signal_tweet(self, message_data: Dict, suggester: str, rating: int) -> str:
-        """Format signal for Twitter (280 char limit)"""
-        
+        """Format signal for Twitter"""
         if message_data['type'] == 'text':
             content = message_data['content']
         else:
             content = message_data.get('caption') or "New Signal Alert"
-        
+
         max_length = 200 
         if len(content) > max_length:
             content = content[:max_length] + "..."
@@ -2291,17 +2243,12 @@ class TwitterIntegration:
             media_ids = []
             text_content = ""
 
-            # Handle content types
             if content['type'] == 'text':
                 text_content = content['content']
             elif content['type'] == 'photo':
-                # Grab caption
                 text_content = content.get('caption') or "Trading Chart"
-                # Upload the photo using the existing helper method
                 if content.get('file_id'):
                     media_ids = await self._upload_telegram_photo(context, content['file_id'])
-            
-            # Fallback for video/documents (Twitter API for video is complex, maybe skip or just post link)
             else:
                  text_content = content.get('caption') or "Trading Tip"
 
@@ -2323,7 +2270,6 @@ class TwitterIntegration:
             return None
         
         try:
-            # Extract stats safely
             total = stats.get('total_signals', 0)
             avg = stats.get('avg_rating', 0)
             excellent = stats.get('excellent_signals', 0)
@@ -2352,14 +2298,12 @@ class BroadcastBot:
         self.db = mongo_handler
         self.watermarker = ImageWatermarker()
         
-        # --- ADD THIS BLOCK ---
         self.engagement_tracker = UserEngagementTracker(self.db)
         self.broadcast_limiter = BroadcastFrequencyManager(self.db)
         self.notification_manager = NotificationManager(self.db)
         self.referral_system = ReferralSystem()
         self.achievement_system = AchievementSystem()
         self.twitter = TwitterIntegration()
-        # ----------------------
 
         self.finnhub_client = None
         if FINNHUB_API_KEY:
@@ -2372,14 +2316,13 @@ class BroadcastBot:
         EDUCATION_CHANNEL_ID = os.getenv('EDUCATION_CHANNEL_ID')
         if EDUCATION_CHANNEL_ID:
             self.edu_content_manager = EducationalContentManager(
-                self.db.db,  # Pass the database object
+                self.db.db, 
                 EDUCATION_CHANNEL_ID
             )
             logger.info(f"Educational Content Manager initialized for channel: {EDUCATION_CHANNEL_ID}")
         else:
             self.edu_content_manager = None
             logger.warning("EDUCATION_CHANNEL_ID not set. Educational content feature disabled.")
-        # Initialize Admin Duty Manager
         self.admin_duty_manager = AdminDutyManager(self.db.db)
         logger.info("Admin Duty Manager initialized")
         
@@ -2481,11 +2424,9 @@ class BroadcastBot:
             
             results = self.admin_duty_manager.auto_complete_duties_with_no_work()
             
-            # Build comprehensive summary
             summary = "🤖 <b>End-of-Day Duty Report</b>\n"
             summary += f"Date: {datetime.now(timezone.utc).strftime('%Y-%m-%d')}\n\n"
             
-            # No work available
             if results['auto_completed_no_work']:
                 summary += "✅ <b>Auto-Completed (No Work):</b>\n"
                 for category, admins in results['auto_completed_no_work'].items():
@@ -2495,7 +2436,6 @@ class BroadcastBot:
                         summary += f"  • {admin}\n"
                 summary += "\n"
             
-            # Covered by team
             if results['auto_completed_covered']:
                 summary += "🤝 <b>Auto-Completed (Team Coverage):</b>\n"
                 for category, admins in results['auto_completed_covered'].items():
@@ -2505,7 +2445,6 @@ class BroadcastBot:
                         summary += f"  • {admin}\n"
                 summary += "\n"
             
-            # Incomplete (performance issue)
             if results['left_incomplete']:
                 summary += "⚠️ <b>Incomplete (Work Not Done):</b>\n"
                 for category, admins in results['left_incomplete'].items():
@@ -2520,7 +2459,6 @@ class BroadcastBot:
             
             summary += "\n<i>Use /dutystats for detailed analytics</i>"
             
-            # Notify super admins
             for super_admin_id in self.super_admin_ids:
                 try:
                     await context.bot.send_message(
@@ -2538,9 +2476,8 @@ class BroadcastBot:
         """Check if a user is subscribed to the force-sub channel"""
         FORCE_SUB_CHANNEL = os.getenv('FORCE_SUB_CHANNEL')
         if not FORCE_SUB_CHANNEL:
-            return True # Skip check if not configured
+            return True
 
-        # Don't check admins
         if self.is_admin(user_id):
             return True
 
@@ -2552,14 +2489,12 @@ class BroadcastBot:
                 return False
         except BadRequest as e:
             if "user not found" in e.message or "chat not found" in e.message:
-                # "user not found" means they aren't in the channel
-                # "chat not found" means the FORCE_SUB_CHANNEL is wrong or bot isn't admin
                 if "chat not found" in e.message:
                     logger.error(f"Force-sub error: Bot cannot access channel {FORCE_SUB_CHANNEL}. Is it an admin there?")
                 return False
         except Exception as e:
             logger.error(f"Error in is_user_subscribed for {user_id}: {e}")
-            return False # Fail-safe
+            return False
 
     async def send_join_channel_message(self, chat_id: int, context: ContextTypes.DEFAULT_TYPE):
         """Sends the 'please join' message"""
@@ -2567,7 +2502,6 @@ class BroadcastBot:
         if not FORCE_SUB_CHANNEL:
             return
 
-        # Create a channel link from the username
         channel_link = f"https://t.me/{FORCE_SUB_CHANNEL.lstrip('@')}"
 
         keyboard = [
@@ -2596,7 +2530,6 @@ class BroadcastBot:
             )
 
         raise ApplicationHandlerStop
-        # Initialize super admins in database
         for admin_id in super_admin_ids:
             self.db.add_admin(admin_id, AdminRole.SUPER_ADMIN, admin_id)
 
@@ -2615,13 +2548,11 @@ class BroadcastBot:
     def needs_approval(self, user_id: int) -> bool:
         """Check if user's broadcasts need approval"""
         role = self.get_admin_role(user_id)
-        # Broadcasters and Admins need approval, Super Admins and Moderators don't
         return role in [AdminRole.BROADCASTER, AdminRole.ADMIN]
 
     def get_user_suggestion_limit(self, user_id: int) -> (int, str):
         """Determines a user's suggestion limit and level based on rating AND achievements"""
         
-        # 1. Calculate Base Limit based on Rating
         avg_rating = self.db.get_user_average_rating(user_id)
 
         if avg_rating >= 4:
@@ -2660,16 +2591,13 @@ class BroadcastBot:
         """Polished welcome with clear value prop & referral handling"""
         user = update.effective_user
         user_id = user.id
-        
-        # --- Referral Handling ---
+    
         if context.args and context.args[0].startswith("ref_"):
             try:
                 referrer_id = int(context.args[0].split('_')[1])
                 if referrer_id != user_id:
-                    # Check if user is new (no 'created_at' yet)
                     existing_user = self.db.users_collection.find_one({'user_id': user_id})
                     if not existing_user or 'created_at' not in existing_user:
-                        # This is a new user, process referral
                         await self.referral_system.process_referral(user_id, referrer_id, self.db, context)
             except Exception as e:
                 logger.error(f"Error processing referral: {e}")
@@ -2682,12 +2610,10 @@ class BroadcastBot:
         self.db.add_user(user_id, user.username, user.first_name)
         self.engagement_tracker.update_engagement(user_id, 'command_used') # Track engagement
         
-        # Check if new user (first time)
         user_doc = self.db.users_collection.find_one({'user_id': user_id})
         is_new = not user_doc.get('welcomed', False)
 
         if self.is_admin(user_id):
-            # Admin Panel with inline buttons
             role = self.get_admin_role(user_id)
             admin_main_menu_text = (
                 f"🔧 <b>Admin Panel</b> ({role.value.replace('_', ' ').title()})\n\n"
@@ -2701,8 +2627,7 @@ class BroadcastBot:
                 keyboard.append([InlineKeyboardButton("✅ Approval System", callback_data='admin_approvals')])
             
             keyboard.append([InlineKeyboardButton("📝 Templates", callback_data='admin_templates')])
-            
-            # --- NEW: Team Duties & QA ---
+        
             if self.is_admin(user_id):
                 keyboard.append([InlineKeyboardButton("📋 Team Duties & QA", callback_data='admin_duties')])
                 
@@ -2744,20 +2669,18 @@ class BroadcastBot:
                     "<i>Enable notifications to never miss important updates!</i>"
                 )
                 
-                # Mark as welcomed
                 self.db.users_collection.update_one(
                     {'user_id': user_id},
                     {'$set': {'welcomed': True}}
                 )
             else:
-                # Returning user
                 welcome = (
                     f"Welcome back, {user.first_name}! 👋\n\n"
                     
                     "Quick access:\n"
                     "/mystats - Your performance\n"
-                    "/myprogress - Your signal progress\n" # <-- NEW
-                    "/referral - Refer friends\n" # <-- NEW
+                    "/myprogress - Your signal progress\n" 
+                    "/referral - Refer friends\n" 
                     "/subscribe - VIP access\n"
                     "/help - All commands"
                 )
@@ -2865,7 +2788,6 @@ class BroadcastBot:
             )
             keyboard.append([InlineKeyboardButton("⬅️ Back to Admin Main", callback_data='admin_main_menu')])
         elif data == 'admin_main_menu':
-            # Recreate the main admin menu
             role = self.get_admin_role(user_id)
             message_text = (
                 f"🔧 <b>Admin Panel</b> ({role.value.replace('_', ' ').title()})\n\n"
@@ -2962,7 +2884,6 @@ class BroadcastBot:
         
         text = help_texts.get(query.data, "Coming soon!")
         
-        # Build buttons
         if query.data == "help_main":
             keyboard = [
                 [InlineKeyboardButton("📊 Trading Tools", callback_data="help_tools")],
@@ -2986,16 +2907,15 @@ class BroadcastBot:
         await query.answer()
         
         data = query.data
-        action, template_id = data.split('_', 2)[1:] # e.g., tpl_view_12345
+        action, template_id = data.split('_', 2)[1:] 
         
         template = self.db.get_template(template_id)
         
-        if not template and action != "del": # Allow delete confirmation to pass even if deleted
+        if not template and action != "del":
             await query.edit_message_text("❌ Template not found. It may have been deleted.")
             return
 
         if action == "view":
-            # PREVIEW THE TEMPLATE
             msg_data = template['message_data']
             content_preview = " [Media Content]"
             if msg_data['type'] == 'text':
@@ -3020,10 +2940,8 @@ class BroadcastBot:
             await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
             
         elif action == "del":
-            # DELETE THE TEMPLATE
             if self.db.delete_template(template_id, query.from_user.id):
                 await query.answer("Template deleted!", show_alert=True)
-                # Refresh list
                 await self.list_templates_callback(update, context)
             else:
                 await query.answer("Failed to delete.", show_alert=True)
@@ -3031,7 +2949,6 @@ class BroadcastBot:
         elif action == "use":
             context.user_data.clear()
             
-            # Load the message data directly from template
             context.user_data['ready_message_data'] = template['message_data']
             context.user_data['template_name'] = template['name']
             
@@ -3147,7 +3064,6 @@ class BroadcastBot:
         remaining = limit - today_count
 
         if remaining <= 0:
-            # Show when limits reset + tips to improve rating
             avg_rating = self.db.get_user_average_rating(user_id)
             message = (
                 f"❌ Daily limit reached ({today_count}/{limit})\n\n"
@@ -3170,7 +3086,6 @@ class BroadcastBot:
             await update.message.reply_text(message, parse_mode=ParseMode.HTML)
             return ConversationHandler.END
 
-        # Provide template for quality signals
         template = (
             "💡 <b>Submit a Quality Signal</b>\n\n"
             f"📊 Level: {level} ({remaining}/{limit} remaining)\n\n"
@@ -3189,7 +3104,6 @@ class BroadcastBot:
             "Send /cancel to cancel"
         )
     
-        # The callback_data="show_signal_example" is correct and is handled by the fix in ConversationHandler
         keyboard = [[InlineKeyboardButton("📋 View Example", callback_data="show_signal_example")]]
     
         await update.message.reply_text(
@@ -3302,11 +3216,10 @@ class BroadcastBot:
         if missing:
             return False, f"Missing required fields: {', '.join(missing)}. Please include at least Pair and Entry."
     
-        # TWEAK: Expand pair detection to include more formats
         pairs = ['EUR', 'USD', 'GBP', 'JPY', 'AUD', 'NZD', 'CAD', 'CHF', 
                  'XAU', 'GOLD', 'SILVER', 'XAG', 'OIL', 'CRUDE',
-                 'V25', 'V75', 'V100', 'BOOM', 'CRASH',  # Deriv indices
-                 'US30', 'NAS100', 'SPX500']  # Added indices
+                 'V25', 'V75', 'V100', 'BOOM', 'CRASH', 
+                 'US30', 'NAS100', 'SPX500'] 
         has_pair = any(pair in text.upper() for pair in pairs)
     
         if not has_pair:
@@ -3320,8 +3233,8 @@ class BroadcastBot:
 
     async def validate_signal_image(self, photo_file: 'telegram.PhotoSize') -> (bool, str, str):
         """Validate signal image - MORE LENIENT"""
-        MIN_WIDTH = 200   # Was 300
-        MIN_HEIGHT = 150  # Was 200
+        MIN_WIDTH = 200  
+        MIN_HEIGHT = 150 
 
         if photo_file.width < MIN_WIDTH or photo_file.height < MIN_HEIGHT:
             return False, f"Image is too small ({photo_file.width}x{photo_file.height}). Minimum is {MIN_WIDTH}x{MIN_HEIGHT}px.", ""
@@ -3334,10 +3247,10 @@ class BroadcastBot:
         
             extracted_text = pytesseract.image_to_string(image)
         
-            if not extracted_text or len(extracted_text.strip()) < 5:  # Was 10
+            if not extracted_text or len(extracted_text.strip()) < 5:
                 return False, "Image is unclear. Could not read any text from it.", ""
         
-            if len(extracted_text.strip()) >= 15:  # Only validate longer texts
+            if len(extracted_text.strip()) >= 15: 
                 is_valid, reason = self.validate_signal_format(extracted_text)
             
                 if not is_valid:
@@ -3378,7 +3291,7 @@ class BroadcastBot:
                     parse_mode=ParseMode.HTML,
                     reply_markup=InlineKeyboardMarkup(keyboard)
                 )
-                return ConversationHandler.END  # Wait for callback
+                return ConversationHandler.END 
         
             message_data['type'] = 'text'
             message_data['content'] = message.text
@@ -3392,7 +3305,6 @@ class BroadcastBot:
             if message.caption:
                 is_valid, reason = self.validate_signal_format(message.caption)
                 if not is_valid:
-                    # TWEAK: Show warning but allow submission
                     await update.message.reply_text(
                         f"⚠️ Caption may be incomplete: {reason}\n\n"
                         f"✅ Submitting anyway since you included an image...",
@@ -3456,7 +3368,6 @@ class BroadcastBot:
                 "You'll be notified when it's reviewed."
             )
 
-            # Notify super admins
             await self.notify_super_admins_new_suggestion(context, suggestion_id)
         else:
             await update.message.reply_text("❌ Failed to submit suggestion. Please try again.")
@@ -3665,11 +3576,9 @@ class BroadcastBot:
                 await query.edit_message_caption(caption=error_text)
             return ConversationHandler.END
 
-        # Update status with rating
         self.db.update_suggestion_status(suggestion_id, 'approved', query.from_user.id, rating=rating)
         self.admin_duty_manager.credit_duty_for_action(query.from_user.id, 'signal_approved')
         
-        # --- ADD THIS BLOCK ---
         suggester_id = suggestion['suggested_by']
         self.engagement_tracker.update_engagement(suggester_id, 'signal_approved')
         if rating == 5:
@@ -3680,7 +3589,6 @@ class BroadcastBot:
 
         await self.broadcast_signal(context, suggestion)
 
-        # Notify suggester
         try:
             await context.bot.send_message(
                 chat_id=suggestion['suggested_by'],
@@ -3708,7 +3616,6 @@ class BroadcastBot:
             await update.message.reply_text("❌ Error: Suggestion not found.")
             return ConversationHandler.END
 
-        # Update status with rejection reason
         self.db.update_suggestion_status(
             suggestion_id, 
             'rejected', 
@@ -3717,7 +3624,6 @@ class BroadcastBot:
         )
         self.admin_duty_manager.credit_duty_for_action(update.effective_user.id, 'signal_rejected')
 
-        # Notify suggester
         try:
             await context.bot.send_message(
                 chat_id=suggestion['suggested_by'],
@@ -3839,7 +3745,6 @@ class BroadcastBot:
             except:
                 pass
 
-    # Approval System
     async def list_approvals(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /approvals command"""
         if not self.has_permission(update.effective_user.id, Permission.APPROVE_BROADCASTS):
@@ -3933,14 +3838,11 @@ class BroadcastBot:
             return
 
         if action == "approve":
-            # Update status
             self.db.update_approval_status(approval_id, 'approved', query.from_user.id)
             self.admin_duty_manager.credit_duty_for_action(query.from_user.id, 'broadcast_approved')
 
-            # Execute broadcast
             await self.execute_approved_broadcast(context, approval, query.from_user.id)
 
-            # Notify creator
             try:
                 await context.bot.send_message(
                     chat_id=approval['created_by'],
@@ -3956,7 +3858,6 @@ class BroadcastBot:
             self.db.update_approval_status(approval_id, 'rejected', query.from_user.id)
             self.admin_duty_manager.credit_duty_for_action(query.from_user.id, 'broadcast_rejected')
 
-            # Notify creator
             try:
                 await context.bot.send_message(
                     chat_id=approval['created_by'],
@@ -3974,7 +3875,6 @@ class BroadcastBot:
         message_data = approval['message_data']
         target = approval['target']
 
-        # Get target users
         all_users = self.db.get_all_users()
         subscribers = self.db.get_all_subscribers()
         admin_ids = self.db.get_all_admin_ids()
@@ -4001,7 +3901,6 @@ class BroadcastBot:
                 continue
             try:
                 if message_data['type'] == 'text':
-                    # Append footer
                     text_to_send = message_data['content'] + footer
                     await context.bot.send_message(
                         chat_id=user_id,
@@ -4010,7 +3909,6 @@ class BroadcastBot:
                         protect_content=message_data.get('protect_content', False)
                     )
                 elif message_data['type'] == 'photo':
-                    # Append footer
                     caption_to_send = (message_data.get('caption') or '') + footer
                     await context.bot.send_photo(
                         chat_id=user_id,
@@ -4020,7 +3918,6 @@ class BroadcastBot:
                         protect_content=message_data.get('protect_content', False)
                     )
                 elif message_data['type'] == 'video':
-                    # Append footer
                     caption_to_send = (message_data.get('caption') or '') + footer
                     await context.bot.send_video(
                         chat_id=user_id,
@@ -4030,7 +3927,6 @@ class BroadcastBot:
                         protect_content=message_data.get('protect_content', False)
                     )
                 elif message_data['type'] == 'document':
-                    # Append footer
                     caption_to_send = (message_data.get('caption') or '') + footer
                     await context.bot.send_document(
                         chat_id=user_id,
@@ -4091,7 +3987,6 @@ class BroadcastBot:
             "Send /cancel to cancel."
         )
         context.user_data.clear()
-        # Mark as scheduled flow
         context.user_data['scheduled'] = True 
         return WAITING_MESSAGE
 
@@ -4544,7 +4439,6 @@ class BroadcastBot:
                     target = broadcast['target']
                     broadcast_id = str(broadcast['_id'])
 
-                    # Get target users
                     all_users = self.db.get_all_users()
                     subscribers = self.db.get_all_subscribers()
                     admin_ids = self.db.get_all_admin_ids()
@@ -4562,17 +4456,14 @@ class BroadcastBot:
 
                     success_count = 0
                     failed_count = 0
-                    # Define the footer
                     footer = "\n\n🔕 Disable: /settings then toggle off Admin Signals & Announcements"
 
-                    # Send messages
                     for user_id in target_users:
                         if not self.notification_manager.should_notify(user_id, 'broadcasts'):
                             failed_count += 1
                             continue
                         try:
                             if message_data['type'] == 'text':
-                                # Append footer
                                 text_to_send = message_data['content'] + footer
                                 await context.bot.send_message(
                                     chat_id=user_id,
@@ -4581,7 +4472,6 @@ class BroadcastBot:
                                     protect_content=message_data.get('protect_content', False)
                                 )
                             elif message_data['type'] == 'photo':
-                                # Append footer
                                 caption_to_send = (message_data.get('caption') or '') + footer
                                 await context.bot.send_photo(
                                     chat_id=user_id,
@@ -4597,18 +4487,15 @@ class BroadcastBot:
                             logger.error(f"Failed to send scheduled to {user_id}: {e}")
                             failed_count += 1
 
-                    # Update status
                     if broadcast['repeat'] == 'once':
                         self.db.update_broadcast_status(broadcast_id, 'completed')
                     else:
-                        # Reschedule
                         next_time = self.calculate_next_time(broadcast['scheduled_time'], broadcast['repeat'])
                         self.db.scheduled_broadcasts_collection.update_one(
                             {'_id': broadcast['_id']},
                             {'$set': {'scheduled_time': next_time}}
                         )
 
-                    # Log activity
                     self.db.log_activity(broadcast['created_by'], 'scheduled_broadcast_sent', {
                         'broadcast_id': broadcast_id,
                         'success': success_count,
@@ -4642,7 +4529,6 @@ class BroadcastBot:
         for i, stat in enumerate(stats[:10]):
             rank_icon = medals[i] if i < 3 else f"<b>{i+1}.</b>"
             
-            # Check privacy
             user_doc = self.db.users_collection.find_one({'user_id': stat['_id']})
             is_public = user_doc.get('leaderboard_public', True) if user_doc else True
             name = stat['suggester_name'] if is_public else "Anonymous"
@@ -4670,7 +4556,6 @@ class BroadcastBot:
         )
         message += "\n\n🔕 Disable: /settings then toggle off Leaderboards"
         
-        # Send to all users who have not opted out
         target_users = self.db.get_all_users()
         for user_id in target_users:
             if self.notification_manager.should_notify(user_id, 'leaderboards'):
@@ -4683,7 +4568,6 @@ class BroadcastBot:
                     await asyncio.sleep(0.05)
                 except Exception as e:
                     logger.error(f"Failed to send leaderboard to {user_id}: {e}")
-    # MODIFIED FUNCTION
     async def _get_admin_performance_comment(self, score: int) -> str:
         """Generate a brutally honest comment on admin performance based ONLY on score"""
         if score == 0:
@@ -4695,7 +4579,7 @@ class BroadcastBot:
             activity_level = "Strong activity — solid effort but still room to push harder."
         elif score > 3:
             activity_level = "Average effort — you’re doing the bare minimum."
-        else: # score is 1-3
+        else:
             activity_level = "Poor activity — your contribution is disappointing."
 
         return f"Comment: {activity_level}" 
@@ -4898,7 +4782,6 @@ class BroadcastBot:
         # Format task list
         tasks_text = "\n".join([f"  • {task}" for task in duty_info['tasks']])
         
-        # Determine priority emoji
         priority_emoji = {
             'high': '🔴',
             'medium': '🟡',
@@ -5113,8 +4996,7 @@ class BroadcastBot:
     async def send_duty_reminders_job(self, context: ContextTypes.DEFAULT_TYPE):
         """Send reminders to admins with incomplete duties"""
         date_key = self.admin_duty_manager.get_date_key()
-        
-        # Find incomplete duties for today
+    
         incomplete_duties = self.admin_duty_manager.admin_duties_collection.find({
             'date': date_key,
             'completed': False
@@ -5199,7 +5081,6 @@ class BroadcastBot:
         """Create and configure application"""
         application = Application.builder().token(self.token).build()
 
-        # Broadcast handler
         broadcast_handler = ConversationHandler(
             entry_points=[
                 CommandHandler("broadcast", self.start_broadcast),
@@ -5227,7 +5108,6 @@ class BroadcastBot:
             fallbacks=[CommandHandler("cancel", self.cancel_broadcast)]
         )
 
-        # Schedule broadcast handler
         schedule_handler = ConversationHandler(
             entry_points=[CommandHandler("schedule", self.schedule_broadcast_start)],
             states={
@@ -5255,7 +5135,6 @@ class BroadcastBot:
             fallbacks=[CommandHandler("cancel", self.cancel_broadcast)]
         )
 
-        # Template save handler
         template_handler = ConversationHandler(
             entry_points=[CommandHandler("savetemplate", self.save_template_start)],
             states={
@@ -5272,7 +5151,6 @@ class BroadcastBot:
             fallbacks=[CommandHandler("cancel", self.cancel_broadcast)]
         )
 
-        # Add admin handler
         add_admin_handler = ConversationHandler(
             entry_points=[CommandHandler("addadmin", self.add_admin_start)],
             states={
@@ -5286,7 +5164,6 @@ class BroadcastBot:
             fallbacks=[CommandHandler("cancel", self.cancel_broadcast)]
         )
 
-        # Signal suggestion handler
         signal_handler = ConversationHandler(
             entry_points=[CommandHandler("suggestsignal", self.suggest_signal_start_v2)],
             states={
@@ -5298,7 +5175,6 @@ class BroadcastBot:
             fallbacks=[CommandHandler("cancel", self.cancel_broadcast)]
         )
 
-        # New subscribe handler
         subscribe_handler = ConversationHandler(
             entry_points=[CommandHandler("subscribe", self.subscribe_start)],
             states={
@@ -5427,7 +5303,6 @@ class BroadcastBot:
             except ValueError:
                 logger.error("EDUCATION_CHANNEL_ID must be an integer (e.g. -10012345...) for the listener to work.")
 
-            # 2. Allow admins to forward old messages to the bot to save them
             application.add_handler(
                 MessageHandler(
                     filters.FORWARDED & filters.User(user_id=self.super_admin_ids), 
@@ -5435,41 +5310,33 @@ class BroadcastBot:
                 )
             )
 
-        # Error handler
         application.add_error_handler(self.error_handler)
 
-        # --- MODIFIED & NEW JOBS ---
-        
-        # Schedule checker (every minute)
         application.job_queue.run_repeating(
             self.process_scheduled_broadcasts,
             interval=60,
             first=10
         )
 
-        # (Existing) Leaderboard job (Sunday at 00:00 UTC)
         utc_midnight = dt_time(hour=0, minute=0, tzinfo=timezone.utc)
         application.job_queue.run_daily(
             self.run_leaderboards_job_v2,
             time=utc_midnight,
-            days=(0,) 
+            days=(1,) 
         )
         
-        # NEW: Daily Tip job (Daily at 10:00 UTC)
         utc_10am = dt_time(hour=10, minute=0, tzinfo=timezone.utc)
         application.job_queue.run_daily(
             self.send_daily_tip,
             time=utc_10am
         )
         
-        # NEW: Re-engagement job (Daily at 12:00 UTC)
         utc_12pm = dt_time(hour=12, minute=0, tzinfo=timezone.utc)
         application.job_queue.run_daily(
             self.re_engage_users_job,
             time=utc_12pm
         )
 
-        # Auto-sync educational content daily (at 2 AM UTC)
         if self.edu_content_manager:
             utc_2am = dt_time(hour=2, minute=0, tzinfo=timezone.utc)
             application.job_queue.run_daily(
@@ -5477,20 +5344,17 @@ class BroadcastBot:
                 time=utc_2am
             )
 
-        # Daily duty assignment (midnight UTC)
         utc_midnight = dt_time(hour=0, minute=0, tzinfo=timezone.utc)
         application.job_queue.run_daily(
             self.assign_daily_duties_job,
             time=utc_midnight
         )
 
-        # Duty reminder (6 PM UTC for incomplete duties)
         utc_6pm = dt_time(hour=18, minute=0, tzinfo=timezone.utc)
         application.job_queue.run_daily(
             self.send_duty_reminders_job,
             time=utc_6pm
         )
-        # NEW: Weekly Twitter performance (Sunday 18:00 UTC)
         utc_6pm = dt_time(hour=18, minute=0, tzinfo=timezone.utc)
         application.job_queue.run_daily(
             self.post_weekly_performance_to_twitter,
@@ -5505,15 +5369,12 @@ class BroadcastBot:
         )
         return application
 
-    # --- Wrapper for re-engagement job ---
     async def re_engage_users_job(self, context: ContextTypes.DEFAULT_TYPE):
         await self.engagement_tracker.re_engage_inactive_users(context)
 
-    # --- Wrapper for promo job ---
     async def run_promo_job(self, context: ContextTypes.DEFAULT_TYPE):
         await PromotionManager.announce_promo(context, self.db)
 
-    # --- Wrappers for new commands ---
     async def show_performance_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await PerformanceTransparency.show_verified_performance(update, context, self.db)
 
@@ -5525,7 +5386,6 @@ class BroadcastBot:
         """Show user's improvement over time"""
         user_id = update.effective_user.id
         
-        # Get historical data
         current_stats = self.db.get_user_signal_stats(user_id)
         current_rating = self.db.get_user_average_rating(user_id)
         
@@ -5536,7 +5396,6 @@ class BroadcastBot:
             f"Success Rate: {current_stats['rate']:.1f}%\n\n"
         )
         
-        # Add motivational element
         if current_rating >= 4.5:
             message += "🎯 <b>Outstanding!</b> You're in the elite tier!\n"
         elif current_rating >= 4.0:
@@ -5553,7 +5412,6 @@ class BroadcastBot:
     async def suggest_broadcast_time(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Help admins choose optimal broadcast time"""
         
-        # Analyze when users are most active
         pipeline = [
             {
                 '$match': {'last_activity': {'$exists': True, '$ne': None}}
@@ -5599,7 +5457,6 @@ class BroadcastBot:
     async def handle_greeting(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle greetings"""
         user_id = update.effective_user.id
-        # --- FORCE SUB CHECK ---
         if not await self.is_user_subscribed(user_id, context):
             await self.send_join_channel_message(user_id, context)
             return
@@ -5610,13 +5467,9 @@ class BroadcastBot:
         """Start the subscription conversation"""
         user_id = update.effective_user.id
 
-        # --- FORCE SUB CHECK ---
         if not await self.is_user_subscribed(user_id, context):
             await self.send_join_channel_message(user_id, context)
             return ConversationHandler.END
-        # -----------------------
-        
-        # Check if already subscribed
         if self.db.is_subscriber(user_id):
             await update.message.reply_text("✅ You are already a subscriber!")
             return ConversationHandler.END
@@ -5664,7 +5517,6 @@ class BroadcastBot:
 
     async def receive_account_date(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle account creation date"""
-        # A more sophisticated date parsing could be added here
         if "today" in update.message.text.lower() or "yesterday" in update.message.text.lower():
             await update.message.reply_text("Please wait up to 24 hours for the account to reflect in the system.")
             return ConversationHandler.END
@@ -5676,7 +5528,6 @@ class BroadcastBot:
         """Handle CR number and check against the list"""
         cr_number = update.message.text.strip().upper()
 
-        # Check if CR number is already used
         if self.db.is_cr_number_used(cr_number):
             await update.message.reply_text(
                 "❌ This CR number has already been used for verification. Each CR number can only be used once.\n\n"
@@ -5684,9 +5535,7 @@ class BroadcastBot:
             )
             return ConversationHandler.END
 
-        # Check if CR number is in the valid list
         if cr_number in self.cr_numbers:
-            # Mark as used
             self.db.mark_cr_number_as_used(cr_number, update.effective_user.id)
 
             self.engagement_tracker.update_engagement(update.effective_user.id, 'vip_subscribed')
@@ -5708,11 +5557,9 @@ class BroadcastBot:
 
         try:
             text = pytesseract.image_to_string(Image.open(io.BytesIO(photo_bytes)))
-            # A simple regex to find numbers with a dollar sign or just numbers
             matches = re.findall(r'\$?(\d[\d,]*\.\d{2})', text)
             
             if matches:
-                # Clean comma from number
                 balance_str = matches[0].replace(',', '')
                 balance = float(balance_str)
                 
@@ -5873,7 +5720,6 @@ class BroadcastBot:
         
         await update.message.reply_text(f"The user {user_id_to_decline} has been notified of the decline.")
         
-        # Restore original admin message with decline info
         if original_message_id:
             try:
                 await context.bot.edit_message_text(
@@ -5885,7 +5731,6 @@ class BroadcastBot:
                  logger.error(f"Failed to edit original decline message: {e}")
 
 
-        # Clean up context
         context.user_data.pop('user_to_decline', None)
         context.user_data.pop('admin_name', None)
         context.user_data.pop('original_message_text', None)
@@ -5895,11 +5740,9 @@ class BroadcastBot:
     async def receive_schedule_time(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Receive and parse schedule time"""
         try:
-            # Simple parsing for '1h 30m' or '2d'
             time_str = update.message.text.lower()
             delta = timedelta()
             
-            # Regex to find time parts
             parts = re.findall(r'(\d+)\s*(d|h|m)', time_str)
             
             if parts:
@@ -5913,7 +5756,6 @@ class BroadcastBot:
                         delta += timedelta(minutes=val)
                 scheduled_time = datetime.now() + delta
             else:
-                # Try parsing as absolute time
                 scheduled_time = datetime.fromisoformat(time_str)
 
             context.user_data['scheduled_time'] = scheduled_time.timestamp()
@@ -5947,7 +5789,7 @@ class BroadcastBot:
 
     async def finalize_scheduled_broadcast(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Save the scheduled broadcast to the database"""
-        query = update.callback_query # 'update' is a query here
+        query = update.callback_query 
         user_id = query.from_user.id
         
         target_map = {
@@ -5964,7 +5806,6 @@ class BroadcastBot:
         use_watermark = context.user_data.get('use_watermark', False)
         watermarked_image = context.user_data.get('watermarked_image')
 
-        # Prepare message data
         message_data = {
             'type': 'text',
             'content': None,
@@ -6001,7 +5842,6 @@ class BroadcastBot:
             message_data['file_id'] = broadcast_message.document.file_id
             message_data['caption'] = broadcast_message.caption
 
-        # Schedule it
         scheduled_id = self.db.schedule_broadcast(
             message_data,
             context.user_data['scheduled_time'],
@@ -6092,7 +5932,6 @@ class BroadcastBot:
             user_id = int(update.message.text)
             context.user_data['new_admin_id'] = user_id
             
-            # Add user to db to fetch name
             self.db.add_user(user_id) 
 
             keyboard = [
@@ -6186,7 +6025,6 @@ class BroadcastBot:
         user_id = update.effective_user.id
 
         if self.is_admin(user_id):
-            # --- Admin Statistics ---
             admin_stats = self.db.get_admin_stats(user_id)
             admin_stats_text = (
                 f"📊 Your Admin Statistics\n\n"
@@ -6196,7 +6034,6 @@ class BroadcastBot:
                 f"⭐ Signals Rated: {admin_stats.get('ratings', 0)}"
             )
             
-            # --- Regular User Statistics (Added for Admins) ---
             signal_stats = self.db.get_user_signal_stats(user_id)
             avg_rating = self.db.get_user_average_rating(user_id)
             limit, level = self.get_user_suggestion_limit(user_id)
@@ -6214,18 +6051,14 @@ class BroadcastBot:
                 f"🏅 Current Level: {level}"
             )
 
-            # Combine both texts
             full_stats_text = f"{admin_stats_text}\n\n{'-'*30}\n\n{user_stats_text}"
             
             await update.message.reply_text(full_stats_text)
         
         else:
-            # --- Regular User Statistics ---
-            # --- FORCE SUB CHECK ---
             if not await self.is_user_subscribed(user_id, context):
                 await self.send_join_channel_message(user_id, context)
                 return
-            # -----------------------
 
             signal_stats = self.db.get_user_signal_stats(user_id)
             avg_rating = self.db.get_user_average_rating(user_id)
@@ -6259,9 +6092,7 @@ class BroadcastBot:
 
         keyboard = []
         for t in templates:
-            # Create a button for each template: "Name (Category)"
             btn_text = f"{t['name']} ({t.get('category', 'General')})"
-            # Callback data format: tpl_view_TEMPLATEID
             keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"tpl_view_{t['_id']}")])
             
         keyboard.append([InlineKeyboardButton("❌ Close", callback_data="close_settings")])
@@ -6302,7 +6133,6 @@ class BroadcastBot:
         broadcast_id = context.args[0]
         
         try:
-            # Validate ID format
             from bson.objectid import ObjectId
             ObjectId(broadcast_id)
         except Exception:
@@ -6314,7 +6144,6 @@ class BroadcastBot:
         else:
             await update.message.reply_text(f"❌ Broadcast {broadcast_id} not found or already processed.")
 
-    # --- Forex Utility Toolkit ---
 
     async def news(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /news command"""
@@ -6323,11 +6152,9 @@ class BroadcastBot:
             return
 
         try:
-            # --- FORCE SUB CHECK ---
             if not await self.is_user_subscribed(update.effective_user.id, context):
                 await self.send_join_channel_message(update.effective_user.id, context)
                 return
-            # -----------------------
             
             await update.message.reply_text("Fetching latest forex news...")
             
@@ -6352,13 +6179,10 @@ class BroadcastBot:
         """Handle /calendar command - Temporary redirect to FXStreet"""
             
         try:
-            # --- FORCE SUB CHECK ---
             if not await self.is_user_subscribed(update.effective_user.id, context):
                 await self.send_join_channel_message(update.effective_user.id, context)
                 return
-            # -----------------------
             
-            # Temporary solution: Direct users to the website
             message = (
                 "🗓️ <b>Economic Calendar</b>\n\n"
                 "To see the latest high-impact events, please use the official "
@@ -6391,22 +6215,15 @@ class BroadcastBot:
         if "JPY" in pair:
             decimals = 3
             pip_multiplier = 0.01
-        elif "XAU" in pair or "GOLD" in pair: # Gold
+        elif "XAU" in pair or "GOLD" in pair:
             decimals = 2
             pip_multiplier = 0.1
-        else: # Standard pairs
+        else: 
             decimals = 5
             pip_multiplier = 0.0001
         
-        # This is a simplification. Real value depends on quote currency.
-        # For a standard lot (100,000 units)
         pip_value_per_lot = pip_multiplier * 100_000
-        
-        # For now, let's assume quote is USD or similar
-        # A 1-lot pip value is roughly $10 for XXX/USD
-        # A 1-lot pip value for USD/JPY is (0.01 / JPY_PRICE) * 100,000
-        
-        # Let's simplify and just return decimals and pip multiplier
+    
         return pip_multiplier, decimals
 
     async def pips_calculator_v2(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -6419,7 +6236,6 @@ class BroadcastBot:
             return
         
         if len(context.args) != 3:
-            # Helpful error message
             example = (
                 "🧮 <b>Pip Calculator</b>\n\n"
                 
@@ -6448,10 +6264,9 @@ class BroadcastBot:
             direction = "Profit 📈" if pips > 0 else "Loss 📉"
             color = "🟢" if pips > 0 else "🔴"
             
-            # Simplified value calculation
             value_per_pip_lot = 10
             if "JPY" in pair:
-                 value_per_pip_lot = 1000 # This is complex, simplify
+                 value_per_pip_lot = 1000
             
             estimated_value_0_1 = abs(pips) * (value_per_pip_lot * 0.1)
             
@@ -6481,50 +6296,32 @@ class BroadcastBot:
         """
         pair = pair.upper().strip()
         
-        # --- Deriv / Synthetics (Standard 1.0 lot = $1 per point usually) ---
-        # Note: Deriv specs vary, but 1 lot usually equals 1 unit of the index
         if any(x in pair for x in ['VOLATILITY', 'BOOM', 'CRASH', 'STEP', 'JUMP', 'V75', 'V100', 'V25']):
-            # Most Deriv volatility indices: 1 Lot = $1 per 1.0 point move
             return 1.0, "Deriv (assuming $1/point)"
             
-        # --- Commodities / Metals ---
         if 'XAU' in pair or 'GOLD' in pair:
-            # Standard: 100oz contract. 1 pip (0.01) = $10 USD
             return 10.0, "Gold Standard ($10/pip)"
         if 'XAG' in pair or 'SILVER' in pair:
-            # Standard: 5000oz contract. 1 pip (0.01) = $50 USD
             return 50.0, "Silver Standard ($50/pip)"
         if 'BTC' in pair:
-            # Standard: 1 coin. 1 pip (0.01) = $0.01? No, usually $1 move = $1 USD
             return 1.0, "Crypto ($1/1.0 move)"
         if 'US30' in pair or 'DJ30' in pair:
-             # Standard: 1 Lot = $1 per point (variable by broker, often $5 or $1)
              return 1.0, "Index (assuming $1/point)"
 
-        # --- Forex Majors (USD is Counter) ---
-        # EURUSD, GBPUSD, AUDUSD, NZDUSD
         if pair.endswith('USD'):
             return 10.0, "Standard ($10/pip)"
             
-        # --- Forex Crosses (Approximations based on current rates) ---
-        # Accuracy Note: Without a live price feed, we use static averages.
         if 'JPY' in pair:
-            # 1000 units / USDJPY rate (approx 150) = $6.66
             return 6.66, "JPY Pair (~$6.66/pip)"
         if 'CAD' in pair:
-            # 10 USD / USDCAD rate (approx 1.35) = $7.40
             return 7.40, "CAD Pair (~$7.40/pip)"
         if 'CHF' in pair:
-            # 10 USD / USDCHF rate (approx 0.88) = $11.36
             return 11.30, "CHF Pair (~$11.30/pip)"
-        if 'GBP' in pair: # EURGBP
-            # 10 * GBPUSD rate (approx 1.27) = $12.70
+        if 'GBP' in pair:
             return 12.70, "GBP Cross (~$12.70/pip)"
-        if 'EUR' in pair: # EURAUD etc
-             # 10 * EURUSD rate (approx 1.08) = $10.80
+        if 'EUR' in pair:
             return 10.80, "EUR Cross (~$10.80/pip)"
             
-        # Fallback
         return 10.0, "Standard (Approx)"
 
     async def position_size_calculator(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -6534,7 +6331,6 @@ class BroadcastBot:
         """
         self.engagement_tracker.update_engagement(update.effective_user.id, 'command_used')
 
-        # Check subscription
         if not await self.is_user_subscribed(update.effective_user.id, context):
             await self.send_join_channel_message(update.effective_user.id, context)
             return
@@ -6549,7 +6345,6 @@ class BroadcastBot:
             return
 
         try:
-            # 1. Parse Arguments
             pair = context.args[0].upper()
             risk_usd = float(context.args[1])
             sl_pips = float(context.args[2])
@@ -6558,17 +6353,13 @@ class BroadcastBot:
                 await update.message.reply_text("❌ Risk and SL must be positive numbers.")
                 return
 
-            # 2. Get Pip Value Logic
             pip_value_per_lot, description = self.get_estimated_pip_value(pair)
             
-            # 3. Calculate Lot Size
-            # Formula: Risk / (StopLoss * PipValue)
             if pip_value_per_lot > 0:
                 raw_lots = risk_usd / (sl_pips * pip_value_per_lot)
             else:
                 raw_lots = 0
 
-            # 4. Rounding Logic
             if "V75" in pair or "VOLATILITY" in pair:
                 recommended_lots = round(raw_lots, 3) 
                 if recommended_lots < 0.001: recommended_lots = 0.001
@@ -6576,7 +6367,6 @@ class BroadcastBot:
                 recommended_lots = round(raw_lots, 2)
                 if recommended_lots < 0.01: recommended_lots = 0.01
 
-            # 5. Format Output (FIXED: Changed <small> to <i>)
             message = (
                 "📐 <b>Position Size Calculator</b>\n\n"
                 f"Risk: ${risk_usd:,.2f}\n"
@@ -6659,8 +6449,6 @@ class BroadcastBot:
         
         user_doc = self.db.users_collection.find_one({'user_id': user_id}) or {}
         leaderboard_public = user_doc.get('leaderboard_public', True)
-
-        # Build keyboard
         keyboard = []
         for key, desc in [
             ('tips', 'Daily Tips'),
@@ -6710,7 +6498,6 @@ class BroadcastBot:
 
             if toggle_type == "toggle":
                 if key == "leaderboard":
-                    # Toggle privacy
                     user_doc = self.db.users_collection.find_one({'user_id': user_id}) or {}
                     new_status = not user_doc.get('leaderboard_public', True)
                     self.db.users_collection.update_one(
@@ -6718,7 +6505,6 @@ class BroadcastBot:
                         {'$set': {'leaderboard_public': new_status}}
                     )
                 elif key.startswith("notify_"):
-                    # This is the fix: extract the actual key (e.g., 'tips')
                     actual_key = key.split('_', 1)[1]
                     
                     prefs = self.notification_manager.get_notification_preferences(user_id)
@@ -6730,7 +6516,6 @@ class BroadcastBot:
                 else:
                     logger.warning(f"Unknown settings toggle key: {key}")
 
-            # Re-fetch and re-draw the menu
             prefs = self.notification_manager.get_notification_preferences(user_id)
             user_doc = self.db.users_collection.find_one({'user_id': user_id}) or {}
             leaderboard_public = user_doc.get('leaderboard_public', True)
@@ -6767,7 +6552,6 @@ class BroadcastBot:
             )
         
         except Exception as e:
-            # Catch any other errors and report them
             logger.error(f"Error in handle_settings_callback: {e}")
             try:
                 await query.answer("An error occurred. Please try again.", show_alert=True)
@@ -6779,7 +6563,7 @@ def main():
     BOT_TOKEN = os.getenv('BOT_TOKEN')
     ADMIN_IDS = os.getenv('ADMIN_IDS', '').split(',')
     MONGODB_URI = os.getenv('MONGODB_URI')
-    FORCE_SUB_CHANNEL = os.getenv('FORCE_SUB_CHANNEL') # <-- ADD THIS
+    FORCE_SUB_CHANNEL = os.getenv('FORCE_SUB_CHANNEL')
     if not BOT_TOKEN:
         raise ValueError("BOT_TOKEN required")
     if not ADMIN_IDS or ADMIN_IDS == ['']:
@@ -6789,7 +6573,6 @@ def main():
         raise ValueError("MONGODB_URI required")
 
     try:
-        # --- FIX: This line should be indented inside main() ---
         admin_ids = [int(admin_id.strip()) for admin_id in ADMIN_IDS if admin_id.strip()]
     except ValueError:
         raise ValueError("ADMIN_IDS must be comma-separated integers")
