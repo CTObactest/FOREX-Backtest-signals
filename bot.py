@@ -5060,17 +5060,57 @@ class BroadcastBot:
         """Create API server for Mobile App Integration"""
         
         async def api_get_stats(request):
-            """API Endpoint: Get User Stats"""
+            """API Endpoint: Get User Stats & Dashboard Data"""
             try:
                 user_id = int(request.match_info['user_id'])
+                
+                # 1. Fetch User Info
+                user = self.db.users_collection.find_one({'user_id': user_id})
+                username = user.get('first_name') or user.get('username') or "Trader"
+                
+                # 2. Fetch Real Stats
                 avg_rating = self.db.get_user_average_rating(user_id)
                 signal_stats = self.db.get_user_signal_stats(user_id)
                 
+                # 3. Generate Recent Updates (Mock logic + Real logs)
+                # In a real scenario, you'd query 'activity_logs' or 'notifications'
+                updates = []
+                
+                # Check for recent achievements
+                if user and 'achievements' in user and user['achievements']:
+                    last_ach = user['achievements'][-1]
+                    updates.append({
+                        "title": "Achievement Unlocked!",
+                        "desc": f"You unlocked: {last_ach.replace('_', ' ').title()}",
+                        "time": "Recently",
+                        "type": "success"
+                    })
+                
+                # Check for recent approved signals
+                recent_signal = self.db.signal_suggestions_collection.find_one(
+                    {'suggested_by': user_id, 'status': 'approved'},
+                    sort=[('reviewed_at', -1)]
+                )
+                if recent_signal:
+                    rating = recent_signal.get('rating', 5)
+                    updates.append({
+                        "title": "Signal Approved",
+                        "desc": f"Your signal received {rating}⭐",
+                        "time": "Recently",
+                        "type": "alert"
+                    })
+
+                # Fallback if empty
+                if not updates:
+                    updates.append({"title": "Welcome!", "desc": "Start trading to see updates.", "time": "Now", "type": "info"})
+
                 data = {
+                    'username': username,
                     'rating': round(avg_rating, 2),
                     'total_signals': signal_stats['total'],
                     'approved_signals': signal_stats['approved'],
-                    'approval_rate': signal_stats['rate']
+                    'approval_rate': signal_stats['rate'],
+                    'recent_updates': updates
                 }
                 return web.json_response(data)
             except Exception as e:
