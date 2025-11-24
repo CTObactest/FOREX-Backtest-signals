@@ -5146,6 +5146,92 @@ class BroadcastBot:
                 logger.error(f"API Error: {e}")
                 return web.json_response({'error': str(e)}, status=500)
 
+        async def api_get_broadcasts(request):
+            """API Endpoint: Get Approved Signals/Broadcasts"""
+            try:
+                # Fetch approved signals (limit 20, newest first)
+                pipeline = [
+                    {'$match': {'status': 'approved'}},
+                    {'$sort': {'reviewed_at': -1}},
+                    {'$limit': 20},
+                    {'$project': {
+                        '_id': 1,
+                        'message_data': 1,
+                        'rating': 1,
+                        'reviewed_at': 1,
+                        'suggester_name': 1
+                    }}
+                ]
+                
+                signals = list(self.db.signal_suggestions_collection.aggregate(pipeline))
+                results = []
+                
+                current_time = time.time()
+                
+                for sig in signals:
+                    msg_data = sig.get('message_data', {})
+                    
+                    # Determine content and image
+                    content = ""
+                    image_url = None
+                    
+                    if msg_data.get('type') == 'text':
+                        content = msg_data.get('content', '')
+                    elif msg_data.get('type') == 'photo':
+                        content = msg_data.get('caption', '') or "[Image Signal]"
+                        file_id = msg_data.get('file_id')
+                        if file_id:
+                            # Proxy URL for the frontend to fetch the image
+                            image_url = f"/api/media/{file_id}"
+
+                    # Calculate "Time Ago" string for frontend
+                    ts = sig.get('reviewed_at', current_time)
+                    diff = current_time - ts
+                    if diff < 3600:
+                        time_str = f"{int(diff // 60)} mins ago"
+                    elif diff < 86400:
+                        time_str = f"{int(diff // 3600)} hrs ago"
+                    else:
+                        time_str = f"{int(diff // 86400)} days ago"
+
+                    results.append({
+                        'id': str(sig['_id']),
+                        'content': content,
+                        'rating': sig.get('rating', 0),
+                        'timestamp': time_str,
+                        'author': sig.get('suggester_name', 'Unknown'),
+                        'image': image_url  # Frontend can now use this field
+                    })
+                
+                return web.json_response(results)
+            except Exception as e:
+                logger.error(f"API Error (Broadcasts): {e}")
+                return web.json_response({'error': str(e)}, status=500)
+
+        async def api_get_media(request):
+            """API Endpoint: Proxy Telegram Media (Securely serves images)"""
+            try:
+                file_id = request.match_info['file_id']
+                if not file_id:
+                    return web.Response(status=400, text="Missing file_id")
+
+                # Retrieve the file object from Telegram using the bot instance
+                if not hasattr(self, 'application') or not self.application:
+                    return web.Response(status=503, text="Bot not initialized")
+
+                new_file = await self.application.bot.get_file(file_id)
+                
+                # Download to memory buffer
+                bio = io.BytesIO()
+                await new_file.download_to_memory(bio)
+                bio.seek(0)
+                
+                # Return as standard image response
+                return web.Response(body=bio.getvalue(), content_type='image/jpeg')
+            except Exception as e:
+                logger.error(f"Media API Error: {e}")
+                return web.Response(status=404, text="Image not found")
+
         async def health_check(request):
             return web.Response(text="PipSage API Running", status=200)
 
@@ -5153,6 +5239,8 @@ class BroadcastBot:
         app.router.add_get('/health', health_check)
         app.router.add_get('/api/users/{user_id}/stats', api_get_stats)
         app.router.add_post('/api/signals', api_submit_signal)
+        app.router.add_get('/api/broadcasts', api_get_broadcasts)
+        app.router.add_get('/api/media/{file_id}', api_get_media)
         
         import aiohttp_cors
         cors = aiohttp_cors.setup(app, defaults={
