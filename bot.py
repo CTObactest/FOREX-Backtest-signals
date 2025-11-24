@@ -5059,34 +5059,56 @@ class BroadcastBot:
     def create_api_server(self):
         """Create API server for Mobile App Integration"""
         
-        async def api_get_stats(request):
-            """API Endpoint: Get User Stats & Dashboard Data"""
+        async def api_get_stats(self, request):
+        """API Endpoint: Get User Stats & Dashboard Data (Crash-Proof)"""
+        try:
+            # 1. Validate User ID
             try:
                 user_id = int(request.match_info['user_id'])
+            except (ValueError, TypeError):
+                return web.json_response({'error': 'Invalid User ID format'}, status=400)
+
+            # 2. Fetch User Info (With Safety Check)
+            user = self.db.users_collection.find_one({'user_id': user_id})
+            
+            # --- CRITICAL FIX: Handle case where user is not found ---
+            if not user:
+                # Option A: Return 404 (Correct API behavior)
+                # return web.json_response({'error': 'User not found'}, status=404)
                 
-                # 1. Fetch User Info
-                user = self.db.users_collection.find_one({'user_id': user_id})
-                username = user.get('first_name') or user.get('username') or "Trader"
-                
-                # 2. Fetch Real Stats
-                avg_rating = self.db.get_user_average_rating(user_id)
-                signal_stats = self.db.get_user_signal_stats(user_id)
-                
-                # 3. Generate Recent Updates (Mock logic + Real logs)
-                # In a real scenario, you'd query 'activity_logs' or 'notifications'
-                updates = []
-                
-                # Check for recent achievements
-                if user and 'achievements' in user and user['achievements']:
-                    last_ach = user['achievements'][-1]
-                    updates.append({
-                        "title": "Achievement Unlocked!",
-                        "desc": f"You unlocked: {last_ach.replace('_', ' ').title()}",
-                        "time": "Recently",
-                        "type": "success"
-                    })
-                
-                # Check for recent approved signals
+                # Option B: Fallback (Keeps app running for new/unregistered IDs)
+                print(f"⚠️ Warning: User ID {user_id} not found in DB. Using defaults.")
+                user = {} # Empty dict to prevent crashes below
+                username = "Unknown Trader"
+            else:
+                # Safe name retrieval
+                username = user.get('first_name') or user.get('username') or f"Trader {user_id}"
+
+            # 3. Fetch Real Stats (Safe Methods)
+            try:
+                avg_rating = self.db.get_user_average_rating(user_id) or 0.0
+                signal_stats = self.db.get_user_signal_stats(user_id) or {'total': 0, 'approved': 0, 'rate': '0%'}
+            except Exception as db_err:
+                print(f"Database Calculation Error: {db_err}")
+                avg_rating = 0.0
+                signal_stats = {'total': 0, 'approved': 0, 'rate': '0%'}
+
+            # 4. Generate Recent Updates
+            updates = []
+            
+            # Safe Achievement Check
+            achievements = user.get('achievements', [])
+            if achievements:
+                last_ach = achievements[-1]
+                updates.append({
+                    "title": "Achievement Unlocked!",
+                    "desc": f"You unlocked: {str(last_ach).replace('_', ' ').title()}",
+                    "time": "Recently",
+                    "type": "success"
+                })
+
+            # Check for recent approved signals
+            try:
                 recent_signal = self.db.signal_suggestions_collection.find_one(
                     {'suggested_by': user_id, 'status': 'approved'},
                     sort=[('reviewed_at', -1)]
@@ -5096,25 +5118,41 @@ class BroadcastBot:
                     updates.append({
                         "title": "Signal Approved",
                         "desc": f"Your signal received {rating}⭐",
-                        "time": "Recently",
+                        "time": "Recently", # Ideally calculate strict time diff here
                         "type": "alert"
                     })
+            except Exception:
+                pass # Don't crash API if signal lookup fails
 
-                # Fallback if empty
-                if not updates:
-                    updates.append({"title": "Welcome!", "desc": "Start trading to see updates.", "time": "Now", "type": "info"})
+            # Fallback if empty
+            if not updates:
+                updates.append({
+                    "title": "Welcome!", 
+                    "desc": "Start trading to see updates.", 
+                    "time": "Now", 
+                    "type": "info"
+                })
 
-                data = {
-                    'username': username,
-                    'rating': round(avg_rating, 2),
-                    'total_signals': signal_stats['total'],
-                    'approved_signals': signal_stats['approved'],
-                    'approval_rate': signal_stats['rate'],
-                    'recent_updates': updates
-                }
-                return web.json_response(data)
-            except Exception as e:
-                return web.json_response({'error': str(e)}, status=500)
+            # 5. Build Final Response
+            data = {
+                'username': username,
+                'rating': round(float(avg_rating), 2),
+                'total_signals': signal_stats.get('total', 0),
+                'approved_signals': signal_stats.get('approved', 0),
+                'approval_rate': signal_stats.get('rate', '0%'),
+                'recent_updates': updates
+            }
+            
+            return web.json_response(data)
+
+        except Exception as e:
+            # Log the FULL error to your server console so you can see it in Koyeb logs
+            import traceback
+            traceback.print_exc() 
+            print(f"🔥 CRITICAL API ERROR: {str(e)}")
+            
+            # Return a generic error to the phone so it doesn't hang
+            return web.json_response({'error': 'Internal Server Error', 'details': str(e)}, status=500)
 
         async def api_submit_signal(request):
             """API Endpoint: Submit Signal from App"""
