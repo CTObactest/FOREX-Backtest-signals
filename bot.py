@@ -5139,16 +5139,52 @@ class BroadcastBot:
                 return web.json_response({'error': 'Internal Server Error', 'details': str(e)}, status=500)
 
         async def api_get_news(request):
-            """API Endpoint: Get Forex News"""
+            """API Endpoint: Get Forex News with Caching & Validation"""
             if not self.finnhub_client:
-                return web.json_response({'error': 'News service disabled'}, status=503)
+                return web.json_response({'error': 'News service disabled. API Key not configured.'}, status=503)
+
             try:
-                # Fetch general forex news
+                if not hasattr(self, '_news_api_cache'):
+                    self._news_api_cache = {'data': [], 'timestamp': 0}
+
+                CACHE_DURATION = 300
+                current_time = time.time()
+                if self._news_api_cache['data'] and (current_time - self._news_api_cache['timestamp'] < CACHE_DURATION):
+                    return web.json_response(self._news_api_cache['data'])
+
                 news = self.finnhub_client.general_news('forex', min_id=0)
-                return web.json_response(news[:15]) # Return top 15 articles
+                formatted_news = []
+                for item in news:
+                    if not item.get('headline') or not item.get('url'):
+                        continue
+                        
+                    formatted_news.append({
+                        'id': item.get('id'),
+                        'category': item.get('category', 'Forex').title(),
+                        'headline': item.get('headline'),
+                        'image': item.get('image', ''),
+                        'source': item.get('source', 'PipSage News'),
+                        'summary': item.get('summary', ''),
+                        'url': item.get('url'),
+                        'datetime': item.get('datetime')
+                    })
+
+                formatted_news = formatted_news[:40]
+
+                self._news_api_cache = {
+                    'data': formatted_news,
+                    'timestamp': current_time
+                }
+
+                return web.json_response(formatted_news)
+
             except Exception as e:
                 logger.error(f"API News Error: {e}")
-                return web.json_response({'error': str(e)}, status=500)
+                
+                if hasattr(self, '_news_api_cache') and self._news_api_cache['data']:
+                    return web.json_response(self._news_api_cache['data'])
+                
+                return web.json_response({'error': 'Failed to fetch news'}, status=500)
 
         async def api_submit_signal(request):
             """API Endpoint: Submit Signal from App (Supports Text & Images)"""
