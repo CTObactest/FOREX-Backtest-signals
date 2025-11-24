@@ -5186,6 +5186,39 @@ class BroadcastBot:
                 
                 return web.json_response({'error': 'Failed to fetch news'}, status=500)
 
+        async def api_resolve_user(request):
+            """API Endpoint: Resolve Username/Handle to User ID"""
+            try:
+                query = request.query.get('username', '').strip().replace('@', '')
+                
+                if not query:
+                    return web.json_response({'error': 'Username or ID required'}, status=400)
+
+                # 1. Check if input is a direct User ID
+                if query.isdigit():
+                    user = self.db.users_collection.find_one({'user_id': int(query)})
+                else:
+                    # 2. Search by username (Case Insensitive)
+                    user = self.db.users_collection.find_one(
+                        {'username': {'$regex': f'^{re.escape(query)}$', '$options': 'i'}}
+                    )
+
+                if user:
+                    return web.json_response({
+                        'success': True,
+                        'user_id': user['user_id'],
+                        'first_name': user.get('first_name'),
+                        'username': user.get('username')
+                    })
+                else:
+                    return web.json_response({
+                        'error': 'User not found. Please start the bot on Telegram first (/start).'
+                    }, status=404)
+
+            except Exception as e:
+                logger.error(f"API Resolve Error: {e}")
+                return web.json_response({'error': str(e)}, status=500)
+
         async def api_submit_signal(request):
             """API Endpoint: Submit Signal from App (Supports Text & Images)"""
             try:
@@ -5509,6 +5542,7 @@ class BroadcastBot:
         app.router.add_post('/api/signals', api_submit_signal)
         app.router.add_get('/api/broadcasts', api_get_broadcasts)
         app.router.add_get('/api/news', api_get_news)
+        app.router.add_get('/api/resolve_user', api_resolve_user)
         app.router.add_get('/api/media/{file_id}', api_get_media)
         app.router.add_post('/api/settings', api_update_settings)
         app.router.add_get('/api/settings/{user_id}', api_get_settings)
