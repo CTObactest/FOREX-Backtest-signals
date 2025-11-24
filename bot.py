@@ -5508,6 +5508,7 @@ class BroadcastBot:
         app.router.add_get('/api/users/{user_id}/stats', api_get_stats)
         app.router.add_post('/api/signals', api_submit_signal)
         app.router.add_get('/api/broadcasts', api_get_broadcasts)
+        app.router.add_get('/api/news', api_get_news)
         app.router.add_get('/api/media/{file_id}', api_get_media)
         app.router.add_post('/api/settings', api_update_settings)
         app.router.add_get('/api/settings/{user_id}', api_get_settings)
