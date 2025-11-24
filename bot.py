@@ -2069,7 +2069,7 @@ class AdminDutyManager:
         results = list(self.admin_duties_collection.aggregate(pipeline))
         return results
 class TwitterIntegration:
-    """Auto-post bot content to Twitter"""
+    """Auto-post bot content to Twitter with proper Threading"""
     
     def __init__(self):
         self.api_key = os.getenv('TWITTER_API_KEY')
@@ -2094,18 +2094,86 @@ class TwitterIntegration:
             logger.warning("Twitter credentials not set")
 
     def _split_text(self, text: str) -> List[str]:
-        """Split text into chunks for Twitter threading"""
+        """
+        Smartly split text into chunks for Twitter threading.
+        Preserves newlines and paragraph structure.
+        """
         if not text:
             return []
-            
-        limit = 280
-        if len(text) <= limit:
+        MAX_LEN = 265
+
+        if len(text) <= 280:
             return [text]
-            
-        chunks = textwrap.wrap(text, width=270, replace_whitespace=False, drop_whitespace=False)
+
+        paragraphs = text.split('\n')
+        chunks = []
+        current_chunk = ""
+
+        for para in paragraphs:
+            potential_len = len(current_chunk) + len(para) + 1
+
+            if potential_len <= MAX_LEN:
+                if current_chunk:
+                    current_chunk += "\n" + para
+                else:
+                    current_chunk = para
+            else:
+                if current_chunk:
+                    chunks.append(current_chunk)
+                    current_chunk = ""
+
+                if len(para) > MAX_LEN:
+                    wrapped_parts = textwrap.wrap(para, width=MAX_LEN, replace_whitespace=False, drop_whitespace=False)
+                    chunks.extend(wrapped_parts[:-1])
+                    current_chunk = wrapped_parts[-1]
+                else:
+                    current_chunk = para
+
+        if current_chunk:
+            chunks.append(current_chunk)
+
         total = len(chunks)
+        final_tweets = []
+        for i, chunk in enumerate(chunks):
+            suffix = f" ({i+1}/{total})"
+            if len(chunk) + len(suffix) > 280:
+                final_tweets.append(chunk[:280-len(suffix)] + suffix)
+            else:
+                final_tweets.append(chunk + suffix)
+
+        return final_tweets
+
+    async def _post_thread(self, tweets: List[str], media_ids: List[str] = None) -> Optional[str]:
+        """Helper to post a list of strings as a Twitter thread"""
+        if not tweets and not media_ids:
+            return None
+            
+        if not tweets and media_ids:
+            tweets = [""]
+
+        previous_tweet_id = None
+        first_tweet_url = None
         
-        return [f"{chunk} ({i+1}/{total})" for i, chunk in enumerate(chunks)]
+        try:
+            for i, tweet_text in enumerate(tweets):
+                kwargs = {'text': tweet_text}
+                
+                if i == 0 and media_ids:
+                    kwargs['media_ids'] = media_ids
+                
+                if previous_tweet_id:
+                    kwargs['in_reply_to_tweet_id'] = previous_tweet_id
+                
+                response = self.client.create_tweet(**kwargs)
+                previous_tweet_id = response.data['id']
+                
+                if i == 0:
+                    first_tweet_url = f"https://twitter.com/user/status/{response.data['id']}"
+            
+            return first_tweet_url
+        except Exception as e:
+            logger.error(f"Error posting thread: {e}")
+            return None
 
     async def post_general_broadcast(self, context, message_data: Dict) -> Optional[str]:
         """Post a general broadcast to Twitter with threading support"""
@@ -2122,47 +2190,21 @@ class TwitterIntegration:
                 text_content = message_data.get('caption') or ""
                 if message_data.get('file_id'):
                     media_ids = await self._upload_telegram_photo(context, message_data['file_id'])
-
             elif message_data['type'] == 'video':
                 text_content = message_data.get('caption') or ""
                 if message_data.get('file_id'):
                     media_ids = await self._upload_telegram_video(context, message_data['file_id'])
             
             tweets = self._split_text(text_content)
-            
-            if not tweets and media_ids:
-                tweets = [""]
-
-            previous_tweet_id = None
-            first_tweet_url = None
-            
-            for i, tweet_text in enumerate(tweets):
-                kwargs = {'text': tweet_text}
-                
-                if i == 0 and media_ids:
-                    kwargs['media_ids'] = media_ids
-                
-                if previous_tweet_id:
-                    kwargs['in_reply_to_tweet_id'] = previous_tweet_id
-                
-                response = self.client.create_tweet(**kwargs)
-                
-                previous_tweet_id = response.data['id']
-                
-                if i == 0:
-                    first_tweet_url = f"https://twitter.com/user/status/{response.data['id']}"
-
-            return first_tweet_url
+            return await self._post_thread(tweets, media_ids)
             
         except Exception as e:
             logger.error(f"Failed to post broadcast to Twitter: {e}")
             return None
     
     async def _upload_telegram_photo(self, context, file_id):
-        """Download photo from Telegram and upload to Twitter"""
         try:
             new_file = await context.bot.get_file(file_id)
-            
             bio = io.BytesIO()
             await new_file.download_to_memory(bio)
             bio.seek(0)
@@ -2173,19 +2215,12 @@ class TwitterIntegration:
             return []
 
     async def _upload_telegram_video(self, context, file_id):
-        """Download video from Telegram and upload to Twitter"""
         try:
             new_file = await context.bot.get_file(file_id)
             bio = io.BytesIO()
             await new_file.download_to_memory(bio)
             bio.seek(0)
-            
-            media = self.api.media_upload(
-                filename="video.mp4", 
-                file=bio, 
-                media_category='tweet_video'
-            )
-            
+            media = self.api.media_upload(filename="video.mp4", file=bio, media_category='tweet_video')
             return [media.media_id]
         except Exception as e:
             logger.error(f"Error uploading video to Twitter: {e}")
@@ -2200,42 +2235,25 @@ class TwitterIntegration:
             message_data = suggestion['message_data']
             suggester = suggestion['suggester_name']
             rating = suggestion.get('rating', 0)
-        
-            tweet_text = self._format_signal_tweet(message_data, suggester, rating)
+            
+            content = message_data.get('content') if message_data['type'] == 'text' else message_data.get('caption', "")
+            stars = "⭐" * rating if rating else ""
+            
+            full_text = f"💡 Trading Signal {stars}\n\n{content}\n\n👤 Signal by: {suggester}"
             
             media_ids = []
             if message_data['type'] == 'photo':
                 media_ids = await self._upload_telegram_photo(context, message_data['file_id'])
             
-            response = self.client.create_tweet(
-                text=tweet_text,
-                media_ids=media_ids if media_ids else None
-            )
-            
-            tweet_url = f"https://twitter.com/user/status/{response.data['id']}"
-            return tweet_url
+            tweets = self._split_text(full_text)
+            return await self._post_thread(tweets, media_ids)
             
         except Exception as e:
-            logger.error(f"Failed to post to Twitter: {e}")
+            logger.error(f"Failed to post signal to Twitter: {e}")
             return None
-    
-    def _format_signal_tweet(self, message_data: Dict, suggester: str, rating: int) -> str:
-        """Format signal for Twitter"""
-        if message_data['type'] == 'text':
-            content = message_data['content']
-        else:
-            content = message_data.get('caption') or "New Signal Alert"
-
-        max_length = 200 
-        if len(content) > max_length:
-            content = content[:max_length] + "..."
-        
-        stars = "⭐" * rating if rating else ""
-        
-        tweet = f"💡 Trading Signal {stars}\n\n{content}\n\n👤 Signal by: {suggester}"
-        return tweet[:280] 
         
     async def post_daily_tip(self, context, content: Dict) -> Optional[str]:
+        """Post daily tip with proper threading"""
         if not self.client:
             return None
         
@@ -2246,29 +2264,24 @@ class TwitterIntegration:
             if content['type'] == 'text':
                 text_content = content['content']
             elif content['type'] == 'photo':
-                text_content = content.get('caption') or "Trading Chart"
+                text_content = content.get('caption') or ""
                 if content.get('file_id'):
                     media_ids = await self._upload_telegram_photo(context, content['file_id'])
             else:
                  text_content = content.get('caption') or "Trading Tip"
 
-            tweet_text = f"📚 Daily Trading Tip\n\n{text_content[:200]}\n\n#ForexEducation #TradingTips"
+            full_tweet_text = f"📚 Daily Trading Tip\n\n{text_content}\n\n#ForexEducation #TradingTips"
             
-            response = self.client.create_tweet(
-                text=tweet_text[:280],
-                media_ids=media_ids if media_ids else None
-            )
-            return f"https://twitter.com/user/status/{response.data['id']}"
+            tweets = self._split_text(full_tweet_text)
+            
+            return await self._post_thread(tweets, media_ids)
             
         except Exception as e:
             logger.error(f"Failed to post tip to Twitter: {e}")
             return None
     
     async def post_performance_update(self, stats: Dict) -> Optional[str]:
-        """Weekly performance transparency post"""
-        if not self.client:
-            return None
-        
+        if not self.client: return None
         try:
             total = stats.get('total_signals', 0)
             avg = stats.get('avg_rating', 0)
@@ -2283,9 +2296,8 @@ class TwitterIntegration:
                 f"Transparent. Verified. Real.\n\n"
                 f"#ForexSignals #TradingResults"
             )
-            
-            response = self.client.create_tweet(text=tweet)
-            return f"https://twitter.com/user/status/{response.data['id']}"
+            tweets = self._split_text(tweet)
+            return await self._post_thread(tweets)
             
         except Exception as e:
             logger.error(f"Failed to post performance: {e}")
