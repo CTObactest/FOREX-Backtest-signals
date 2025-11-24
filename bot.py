@@ -5043,31 +5043,90 @@ class BroadcastBot:
                  await update.message.reply_text("✅ Content saved to educational database!")
 
   
-    def create_health_server(self, port: int):
-        """Create health check server"""
-        async def health_check(request):
-            return web.Response(text="OK", status=200)
 
-        async def root_handler(request):
-            return web.Response(text="Telegram Bot Running", status=200)
+    def create_api_server(self):
+        """Create API server for Mobile App Integration"""
+        
+        async def api_get_stats(request):
+            """API Endpoint: Get User Stats"""
+            try:
+                user_id = int(request.match_info['user_id'])
+                avg_rating = self.db.get_user_average_rating(user_id)
+                signal_stats = self.db.get_user_signal_stats(user_id)
+                
+                data = {
+                    'rating': round(avg_rating, 2),
+                    'total_signals': signal_stats['total'],
+                    'approved_signals': signal_stats['approved'],
+                    'approval_rate': signal_stats['rate']
+                }
+                return web.json_response(data)
+            except Exception as e:
+                return web.json_response({'error': str(e)}, status=500)
+
+        async def api_submit_signal(request):
+            """API Endpoint: Submit Signal from App"""
+            try:
+                data = await request.json()
+                user_id = int(data.get('user_id'))
+                content = data.get('content') 
+                
+                if not content or not user_id:
+                    return web.json_response({'error': 'Missing data'}, status=400)
+
+                message_data = {
+                    'type': 'text',
+                    'content': content + "\n\n📱 *Submitted via PipSage App*"
+                }
+                
+                user = self.db.users_collection.find_one({'user_id': user_id})
+                name = user.get('first_name', str(user_id)) if user else str(user_id)
+
+                suggestion_id = self.db.create_signal_suggestion(message_data, user_id, name)
+                
+                if suggestion_id:
+                    self.engagement_tracker.update_engagement(user_id, 'signal_suggested')
+                    return web.json_response({'success': True, 'id': suggestion_id})
+                else:
+                    return web.json_response({'error': 'Database error'}, status=500)
+
+            except Exception as e:
+                logger.error(f"API Error: {e}")
+                return web.json_response({'error': str(e)}, status=500)
+
+        async def health_check(request):
+            return web.Response(text="PipSage API Running", status=200)
 
         app = web.Application()
         app.router.add_get('/health', health_check)
-        app.router.add_get('/', root_handler)
+        app.router.add_get('/api/users/{user_id}/stats', api_get_stats)
+        app.router.add_post('/api/signals', api_submit_signal)
+        
+        import aiohttp_cors
+        cors = aiohttp_cors.setup(app, defaults={
+            "*": aiohttp_cors.ResourceOptions(
+                allow_credentials=True,
+                expose_headers="*",
+                allow_headers="*",
+            )
+        })
+        for route in list(app.router.routes()):
+            cors.add(route)
+
         return app
 
     def run_health_server(self, port: int):
-        """Run health check server in thread"""
+        """Run API server in thread"""
         async def start_server():
-            app = self.create_health_server(port)
+            app = self.create_api_server()
             runner = web.AppRunner(app)
             await runner.setup()
             site = web.TCPSite(runner, '0.0.0.0', port)
             await site.start()
-            logger.info(f"Health server on port {port}")
+            logger.info(f"API Server running on port {port}")
 
             while True:
-                await asyncio.sleep(1)
+                await asyncio.sleep(3600)
 
         def run_in_thread():
             loop = asyncio.new_event_loop()
