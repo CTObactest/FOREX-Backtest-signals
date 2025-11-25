@@ -5075,6 +5075,8 @@ class BroadcastBot:
                 else:
                     username = user.get('first_name') or user.get('username') or f"Trader {user_id}"
 
+                is_vip = self.db.is_subscriber(user_id) 
+
                 try:
                     avg_rating = self.db.get_user_average_rating(user_id) or 0.0
                     signal_stats = self.db.get_user_signal_stats(user_id) or {'total': 0, 'approved': 0, 'rate': '0%'}
@@ -5122,6 +5124,7 @@ class BroadcastBot:
 
                 data = {
                     'username': username,
+                    'is_vip': is_vip,
                     'rating': round(float(avg_rating), 2),
                     'total_signals': signal_stats.get('total', 0),
                     'approved_signals': signal_stats.get('approved', 0),
