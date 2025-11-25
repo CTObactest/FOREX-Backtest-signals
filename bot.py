@@ -4331,7 +4331,23 @@ class BroadcastBot:
                 'target': target,
                 'created_by': user_id
             }
-            await self.execute_approved_broadcast(context, dummy_approval, user_id)
+            approval_data = {
+                'message_data': message_data,
+                'created_by': user_id,
+                'creator_name': update.effective_user.first_name or update.effective_user.username or str(user_id),
+                'target': target,
+                'scheduled': False,
+                'status': 'approved',
+                'created_at': time.time(),
+                'reviewed_at': time.time(),
+                'reviewed_by': user_id
+            }
+            
+            result = self.db.broadcast_approvals_collection.insert_one(approval_data)
+            
+            approval_data['_id'] = result.inserted_id 
+
+            await self.execute_approved_broadcast(context, approval_data, user_id)
             
         if platform in ['platform_twitter', 'platform_both']:
             tweet_url = await self.twitter.post_general_broadcast(context, message_data)
