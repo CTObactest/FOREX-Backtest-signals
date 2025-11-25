@@ -6012,6 +6012,8 @@ class BroadcastBot:
         app.router.add_get('/api/settings/{user_id}', api_get_settings)
         app.router.add_get('/api/tools/position_size', api_calculate_position_size)
         app.router.add_post('/api/vip/request', api_vip_request)
+        app.router.add_post('/api/auth/send_code', api_send_code)
+        app.router.add_post('/api/auth/verify_code', api_verify_code)
         
         import aiohttp_cors
         cors = aiohttp_cors.setup(app, defaults={
