@@ -5239,15 +5239,15 @@ class BroadcastBot:
         async def api_vip_request(request):
             """
             API Endpoint: Handle VIP Subscriptions
-            Supports:
-            1. Deriv (Automated): Checks CR Number -> OCR Balance Check -> Auto-Subscribe
-            2. Currencies (Manual): Collects Broker/Account Info -> Sends Admin Request
+            1. Checks Subscription Status First (Unlocks Frontend if already VIP).
+            2. Deriv: Tries Auto-Verification (CR + OCR). If fail -> Forward to Admin.
+            3. Currencies: Forwards to Admin.
             """
             try:
                 reader = await request.multipart()
                 data = {}
                 image_data = None
-
+                
                 # Parse Multipart Data
                 while True:
                     field = await reader.next()
@@ -5260,38 +5260,41 @@ class BroadcastBot:
                         data[field.name] = value.decode('utf-8')
 
                 user_id = int(data.get('user_id', 0))
-                vip_type = data.get('type', '').lower() # 'deriv' or 'currencies'
+                vip_type = data.get('type', '').lower()
 
                 if not user_id:
                     return web.json_response({'error': 'User ID is required'}, status=400)
 
-                # Check if already subscribed
+                # --- 1. CHECK EXISTING SUBSCRIPTION ---
+                # This ensures SignalsScreen.js unlocks automatically if they try to join again
                 if self.db.is_subscriber(user_id):
-                    return web.json_response({'success': False, 'message': 'User is already a VIP subscriber.'})
+                    return web.json_response({
+                        'success': False, 
+                        'message': 'User is already a VIP subscriber.',
+                        'is_vip': True
+                    })
 
-                # --- DERIV AUTOMATED FLOW ---
+                # --- 2. DERIV FLOW (Auto-Check with Admin Fallback) ---
                 if vip_type == 'deriv':
                     cr_number = data.get('cr_number', '').strip().upper()
                     
-                    # 1. Validate CR Number presence
                     if not cr_number:
-                        return web.json_response({'error': 'CR Number is required for Deriv VIP'}, status=400)
-
-                    # 2. Check if CR is already used
-                    if self.db.is_cr_number_used(cr_number):
-                        return web.json_response({'error': 'This CR number has already been used.'}, status=409)
-
-                    # 3. Check if CR is in valid list
-                    if cr_number not in self.cr_numbers:
-                        return web.json_response({
-                            'error': 'CR Number not found in partner list.',
-                            'action': 'verification_failed'
-                        }, status=403)
-
-                    # 4. Process Screenshot (OCR)
+                        return web.json_response({'error': 'CR Number is required'}, status=400)
                     if not image_data:
                         return web.json_response({'error': 'Payment screenshot required'}, status=400)
 
+                    # --- Auto-Verification Logic ---
+                    auto_verify_passed = False
+                    fail_reason = []
+
+                    # A. Check CR Number Validity
+                    if cr_number not in self.cr_numbers:
+                        fail_reason.append(f"CR {cr_number} not in partner list")
+                    elif self.db.is_cr_number_used(cr_number):
+                        fail_reason.append(f"CR {cr_number} already used")
+                    
+                    # B. Check Balance via OCR (Only if CR is okay so far, or just log it)
+                    detected_balance = 0.0
                     try:
                         import pytesseract
                         from PIL import Image
@@ -5301,37 +5304,86 @@ class BroadcastBot:
                         text = pytesseract.image_to_string(Image.open(io.BytesIO(image_data)))
                         matches = re.findall(r'\$?(\d[\d,]*\.\d{2})', text)
                         
-                        balance = 0.0
                         if matches:
-                            balance = float(matches[0].replace(',', ''))
-
-                        if balance >= 50:
-                            # Success! Mark CR used and Subscribe
-                            self.db.mark_cr_number_as_used(cr_number, user_id)
-                            self.db.add_subscriber(user_id)
-                            self.engagement_tracker.update_engagement(user_id, 'vip_subscribed')
+                            # Clean string and convert to float
+                            detected_balance = float(matches[0].replace(',', ''))
+                            if detected_balance < 50:
+                                fail_reason.append(f"Balance too low (${detected_balance})")
+                        else:
+                            fail_reason.append("Could not read balance")
                             
-                            # Notify user via Telegram
+                    except Exception as e:
+                        logger.error(f"OCR Error: {e}")
+                        fail_reason.append("OCR Processing Failed")
+
+                    # C. Decision
+                    if not fail_reason and detected_balance >= 50:
+                        auto_verify_passed = True
+
+                    # --- Execution ---
+                    if auto_verify_passed:
+                        # SUCCESS: Auto-Subscribe
+                        self.db.mark_cr_number_as_used(cr_number, user_id)
+                        self.db.add_subscriber(user_id)
+                        self.engagement_tracker.update_engagement(user_id, 'vip_subscribed')
+                        
+                        # Notify user
+                        try:
+                            await self.application.bot.send_message(
+                                chat_id=user_id,
+                                text="🎉 <b>VIP Activated!</b>\n\nYour Deriv account has been verified automatically.",
+                                parse_mode='HTML'
+                            )
+                        except: pass
+
+                        return web.json_response({'success': True, 'message': 'Deriv VIP Activated Automatically'})
+                    
+                    else:
+                        # FAILURE: Forward to Admin (Fallback)
+                        reason_str = ", ".join(fail_reason)
+                        
+                        user_info = (
+                            f"⚠️ <b>Deriv Auto-Verify Failed</b>\n"
+                            f"Forwarded for Manual Review.\n\n"
+                            f"<b>User ID:</b> {user_id}\n"
+                            f"<b>CR Number:</b> {cr_number}\n"
+                            f"<b>Detected Balance:</b> ${detected_balance}\n"
+                            f"<b>Failure Reason:</b> {reason_str}\n"
+                        )
+
+                        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                        keyboard = [
+                            [
+                                InlineKeyboardButton("✅ Force Approve", callback_data=f"vip_approve_{user_id}"),
+                                InlineKeyboardButton("❌ Decline", callback_data=f"vip_decline_{user_id}")
+                            ]
+                        ]
+                        reply_markup = InlineKeyboardMarkup(keyboard)
+
+                        # Send to Super Admins
+                        sent_count = 0
+                        for admin_id in self.super_admin_ids:
                             try:
-                                await self.application.bot.send_message(
-                                    chat_id=user_id,
-                                    text="🎉 <b>VIP Activated!</b>\n\nYour Deriv account has been verified via the App.",
+                                await self.application.bot.send_photo(
+                                    chat_id=admin_id,
+                                    photo=io.BytesIO(image_data),
+                                    caption=user_info,
+                                    reply_markup=reply_markup,
                                     parse_mode='HTML'
                                 )
-                            except: pass
+                                sent_count += 1
+                            except Exception as e:
+                                logger.error(f"Failed to forward failed Deriv request to admin {admin_id}: {e}")
 
-                            return web.json_response({'success': True, 'message': 'Deriv VIP Activated'})
-                        else:
+                        if sent_count > 0:
                             return web.json_response({
-                                'error': f'Detected balance (${balance}) is below $50.',
-                                'detected_balance': balance
-                            }, status=402)
+                                'success': True, 
+                                'message': 'Auto-verification failed. Sent to agents for manual review. You will be notified soon.'
+                            })
+                        else:
+                            return web.json_response({'error': 'Verification failed and could not contact admins.'}, status=500)
 
-                    except Exception as ocr_err:
-                        logger.error(f"OCR Error: {ocr_err}")
-                        return web.json_response({'error': 'Could not process screenshot. Ensure image is clear.'}, status=422)
-
-                # --- CURRENCIES MANUAL FLOW ---
+                # --- 3. CURRENCIES FLOW (Manual) ---
                 elif vip_type == 'currencies':
                     broker = data.get('broker')
                     acc_name = data.get('account_name')
@@ -5341,7 +5393,6 @@ class BroadcastBot:
                     if not all([broker, acc_name, acc_num, tg_handle]):
                         return web.json_response({'error': 'Missing fields for Currencies request'}, status=400)
 
-                    # Construct Admin Message
                     user_info = (
                         f"📱 <b>New App VIP Request (Currencies)</b>\n\n"
                         f"<b>Broker:</b> {broker}\n"
@@ -5360,7 +5411,6 @@ class BroadcastBot:
                     ]
                     reply_markup = InlineKeyboardMarkup(keyboard)
 
-                    # Send to Super Admins
                     sent_count = 0
                     for admin_id in self.super_admin_ids:
                         try:
@@ -5380,7 +5430,7 @@ class BroadcastBot:
                         return web.json_response({'error': 'Failed to notify admins'}, status=500)
 
                 else:
-                    return web.json_response({'error': 'Invalid VIP type. Use "deriv" or "currencies"'}, status=400)
+                    return web.json_response({'error': 'Invalid VIP type'}, status=400)
 
             except Exception as e:
                 logger.error(f"API VIP Request Error: {e}")
