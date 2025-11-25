@@ -5186,6 +5186,203 @@ class BroadcastBot:
                 
                 return web.json_response({'error': 'Failed to fetch news'}, status=500)
 
+        async def api_calculate_position_size(request):
+            """
+            API Endpoint: Calculate Position Size
+            Usage: GET /api/tools/position_size?pair=EURUSD&risk=100&sl=20
+            """
+            try:
+                params = request.query
+                pair = params.get('pair', '').upper()
+                try:
+                    risk_usd = float(params.get('risk', 0))
+                    sl_pips = float(params.get('sl', 0))
+                except ValueError:
+                    return web.json_response({'error': 'Risk and SL must be numeric'}, status=400)
+
+                if not pair or risk_usd <= 0 or sl_pips <= 0:
+                    return web.json_response({'error': 'Invalid parameters. Required: pair, risk (positive), sl (positive)'}, status=400)
+
+                # Use existing helper from BroadcastBot
+                pip_value_per_lot, description = self.get_estimated_pip_value(pair)
+
+                if pip_value_per_lot > 0:
+                    raw_lots = risk_usd / (sl_pips * pip_value_per_lot)
+                else:
+                    raw_lots = 0
+
+                # Apply rounding logic matching the bot's command
+                if any(x in pair for x in ["V75", "VOLATILITY", "BOOM", "CRASH"]):
+                    recommended_lots = round(raw_lots, 3)
+                    if recommended_lots < 0.001: recommended_lots = 0.001
+                else:
+                    recommended_lots = round(raw_lots, 2)
+                    if recommended_lots < 0.01: recommended_lots = 0.01
+
+                return web.json_response({
+                    'success': True,
+                    'pair': pair,
+                    'pair_type': description,
+                    'risk_usd': risk_usd,
+                    'stop_loss': sl_pips,
+                    'pip_value_per_lot': pip_value_per_lot,
+                    'recommended_lots': recommended_lots
+                })
+
+            except Exception as e:
+                logger.error(f"API Position Size Error: {e}")
+                return web.json_response({'error': str(e)}, status=500)
+
+        async def api_vip_request(request):
+            """
+            API Endpoint: Handle VIP Subscriptions
+            Supports:
+            1. Deriv (Automated): Checks CR Number -> OCR Balance Check -> Auto-Subscribe
+            2. Currencies (Manual): Collects Broker/Account Info -> Sends Admin Request
+            """
+            try:
+                reader = await request.multipart()
+                data = {}
+                image_data = None
+
+                # Parse Multipart Data
+                while True:
+                    field = await reader.next()
+                    if field is None: break
+                    
+                    if field.name == 'image':
+                        image_data = await field.read(decode=False)
+                    else:
+                        value = await field.read(decode=True)
+                        data[field.name] = value.decode('utf-8')
+
+                user_id = int(data.get('user_id', 0))
+                vip_type = data.get('type', '').lower() # 'deriv' or 'currencies'
+
+                if not user_id:
+                    return web.json_response({'error': 'User ID is required'}, status=400)
+
+                # Check if already subscribed
+                if self.db.is_subscriber(user_id):
+                    return web.json_response({'success': False, 'message': 'User is already a VIP subscriber.'})
+
+                # --- DERIV AUTOMATED FLOW ---
+                if vip_type == 'deriv':
+                    cr_number = data.get('cr_number', '').strip().upper()
+                    
+                    # 1. Validate CR Number presence
+                    if not cr_number:
+                        return web.json_response({'error': 'CR Number is required for Deriv VIP'}, status=400)
+
+                    # 2. Check if CR is already used
+                    if self.db.is_cr_number_used(cr_number):
+                        return web.json_response({'error': 'This CR number has already been used.'}, status=409)
+
+                    # 3. Check if CR is in valid list
+                    if cr_number not in self.cr_numbers:
+                        return web.json_response({
+                            'error': 'CR Number not found in partner list.',
+                            'action': 'verification_failed'
+                        }, status=403)
+
+                    # 4. Process Screenshot (OCR)
+                    if not image_data:
+                        return web.json_response({'error': 'Payment screenshot required'}, status=400)
+
+                    try:
+                        import pytesseract
+                        from PIL import Image
+                        import io
+                        import re
+
+                        text = pytesseract.image_to_string(Image.open(io.BytesIO(image_data)))
+                        matches = re.findall(r'\$?(\d[\d,]*\.\d{2})', text)
+                        
+                        balance = 0.0
+                        if matches:
+                            balance = float(matches[0].replace(',', ''))
+
+                        if balance >= 50:
+                            # Success! Mark CR used and Subscribe
+                            self.db.mark_cr_number_as_used(cr_number, user_id)
+                            self.db.add_subscriber(user_id)
+                            self.engagement_tracker.update_engagement(user_id, 'vip_subscribed')
+                            
+                            # Notify user via Telegram
+                            try:
+                                await self.application.bot.send_message(
+                                    chat_id=user_id,
+                                    text="🎉 <b>VIP Activated!</b>\n\nYour Deriv account has been verified via the App.",
+                                    parse_mode='HTML'
+                                )
+                            except: pass
+
+                            return web.json_response({'success': True, 'message': 'Deriv VIP Activated'})
+                        else:
+                            return web.json_response({
+                                'error': f'Detected balance (${balance}) is below $50.',
+                                'detected_balance': balance
+                            }, status=402)
+
+                    except Exception as ocr_err:
+                        logger.error(f"OCR Error: {ocr_err}")
+                        return web.json_response({'error': 'Could not process screenshot. Ensure image is clear.'}, status=422)
+
+                # --- CURRENCIES MANUAL FLOW ---
+                elif vip_type == 'currencies':
+                    broker = data.get('broker')
+                    acc_name = data.get('account_name')
+                    acc_num = data.get('account_number')
+                    tg_handle = data.get('telegram_id')
+
+                    if not all([broker, acc_name, acc_num, tg_handle]):
+                        return web.json_response({'error': 'Missing fields for Currencies request'}, status=400)
+
+                    # Construct Admin Message
+                    user_info = (
+                        f"📱 <b>New App VIP Request (Currencies)</b>\n\n"
+                        f"<b>Broker:</b> {broker}\n"
+                        f"<b>Name:</b> {acc_name}\n"
+                        f"<b>Acc #:</b> {acc_num}\n"
+                        f"<b>Telegram:</b> {tg_handle}\n"
+                        f"<b>User ID:</b> {user_id}"
+                    )
+
+                    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                    keyboard = [
+                        [
+                            InlineKeyboardButton("✅ Approve", callback_data=f"vip_approve_{user_id}"),
+                            InlineKeyboardButton("❌ Decline", callback_data=f"vip_decline_{user_id}")
+                        ]
+                    ]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+
+                    # Send to Super Admins
+                    sent_count = 0
+                    for admin_id in self.super_admin_ids:
+                        try:
+                            await self.application.bot.send_message(
+                                chat_id=admin_id, 
+                                text=user_info,
+                                reply_markup=reply_markup,
+                                parse_mode='HTML'
+                            )
+                            sent_count += 1
+                        except Exception as e:
+                            logger.error(f"Failed to notify admin {admin_id}: {e}")
+
+                    if sent_count > 0:
+                        return web.json_response({'success': True, 'message': 'Request sent to admins for approval'})
+                    else:
+                        return web.json_response({'error': 'Failed to notify admins'}, status=500)
+
+                else:
+                    return web.json_response({'error': 'Invalid VIP type. Use "deriv" or "currencies"'}, status=400)
+
+            except Exception as e:
+                logger.error(f"API VIP Request Error: {e}")
+                return web.json_response({'error': str(e)}, status=500)
+
         async def api_resolve_user(request):
             """API Endpoint: Resolve Username/Handle to User ID"""
             try:
@@ -5194,11 +5391,9 @@ class BroadcastBot:
                 if not query:
                     return web.json_response({'error': 'Username or ID required'}, status=400)
 
-                # 1. Check if input is a direct User ID
                 if query.isdigit():
                     user = self.db.users_collection.find_one({'user_id': int(query)})
                 else:
-                    # 2. Search by username (Case Insensitive)
                     user = self.db.users_collection.find_one(
                         {'username': {'$regex': f'^{re.escape(query)}$', '$options': 'i'}}
                     )
@@ -5546,6 +5741,8 @@ class BroadcastBot:
         app.router.add_get('/api/media/{file_id}', api_get_media)
         app.router.add_post('/api/settings', api_update_settings)
         app.router.add_get('/api/settings/{user_id}', api_get_settings)
+        app.router.add_get('/api/tools/position_size', api_calculate_position_size)
+        app.router.add_post('/api/vip/request', api_vip_request)
         
         import aiohttp_cors
         cors = aiohttp_cors.setup(app, defaults={
