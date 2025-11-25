@@ -5203,7 +5203,6 @@ class BroadcastBot:
                 if not pair or risk_usd <= 0 or sl_pips <= 0:
                     return web.json_response({'error': 'Invalid parameters. Required: pair, risk (positive), sl (positive)'}, status=400)
 
-                # Use existing helper from BroadcastBot
                 pip_value_per_lot, description = self.get_estimated_pip_value(pair)
 
                 if pip_value_per_lot > 0:
@@ -5211,14 +5210,10 @@ class BroadcastBot:
                 else:
                     raw_lots = 0
 
-                # Determine unit type (Point vs Pip) based on the bot's description logic
-                # description usually contains "($10/pip)" or "($1/point)"
-                unit_type = "pip"
+                unit_label = "pip"
                 if "point" in description.lower():
-                    unit_type = "point"
-
-                # Apply rounding logic matching the bot's command
-                # Standard pairs usually 2 decimals, Deriv/Indices often allow 3 or more (e.g. 0.001)
+                    unit_label = "point"
+                display_pip_value = f"${pip_value_per_lot:.2f}/{unit_label}"
                 if any(x in pair for x in ["V75", "VOLATILITY", "BOOM", "CRASH", "STEP", "JUMP", "V100", "V25"]):
                     recommended_lots = round(raw_lots, 3)
                     if recommended_lots < 0.001: recommended_lots = 0.001
@@ -5234,9 +5229,7 @@ class BroadcastBot:
                     'stop_loss': sl_pips,
                     'pip_value_per_lot': pip_value_per_lot,
                     'recommended_lots': recommended_lots,
-                    # New fields for precise App display
-                    'unit': unit_type, 
-                    'display_pip_value': f"${pip_value_per_lot}/{unit_type}" 
+                    'display_pip_value': display_pip_value
                 })
 
             except Exception as e:
