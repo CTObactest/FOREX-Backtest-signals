@@ -5211,8 +5211,15 @@ class BroadcastBot:
                 else:
                     raw_lots = 0
 
+                # Determine unit type (Point vs Pip) based on the bot's description logic
+                # description usually contains "($10/pip)" or "($1/point)"
+                unit_type = "pip"
+                if "point" in description.lower():
+                    unit_type = "point"
+
                 # Apply rounding logic matching the bot's command
-                if any(x in pair for x in ["V75", "VOLATILITY", "BOOM", "CRASH"]):
+                # Standard pairs usually 2 decimals, Deriv/Indices often allow 3 or more (e.g. 0.001)
+                if any(x in pair for x in ["V75", "VOLATILITY", "BOOM", "CRASH", "STEP", "JUMP", "V100", "V25"]):
                     recommended_lots = round(raw_lots, 3)
                     if recommended_lots < 0.001: recommended_lots = 0.001
                 else:
@@ -5226,7 +5233,10 @@ class BroadcastBot:
                     'risk_usd': risk_usd,
                     'stop_loss': sl_pips,
                     'pip_value_per_lot': pip_value_per_lot,
-                    'recommended_lots': recommended_lots
+                    'recommended_lots': recommended_lots,
+                    # New fields for precise App display
+                    'unit': unit_type, 
+                    'display_pip_value': f"${pip_value_per_lot}/{unit_type}" 
                 })
 
             except Exception as e:
