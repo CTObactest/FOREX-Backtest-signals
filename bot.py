@@ -696,7 +696,9 @@ class MongoDBHandler:
             self.activity_logs_collection.create_index([('timestamp', -1)])
             self.broadcast_approvals_collection.create_index('status')
             self.signal_suggestions_collection.create_index('status')
-            self.used_cr_numbers_collection.create_index('cr_number', unique=True) 
+            self.used_cr_numbers_collection.create_index('cr_number', unique=True)
+            self.vip_requests_collection = self.db['vip_requests']
+            self.vip_requests_collection.create_index([('user_id', 1), ('status', 1)])
 
             logger.info("Successfully connected to MongoDB")
         except (ConnectionFailure, ServerSelectionTimeoutError) as e:
@@ -1445,6 +1447,54 @@ class MongoDBHandler:
         except Exception as e:
             logger.error(f"Error getting user suggester rank for {user_id}: {e}")
             return 0, 0
+
+    def get_latest_vip_request(self, user_id: int) -> Dict:
+        """Get the most recent VIP request for a user"""
+        try:
+            return self.vip_requests_collection.find_one(
+                {'user_id': user_id},
+                sort=[('submitted_at', -1)]
+            )
+        except Exception as e:
+            logger.error(f"Error getting vip request for {user_id}: {e}")
+            return None
+
+    def create_vip_request(self, user_id: int, vip_type: str, details: Dict):
+        """Store a new VIP request"""
+        try:
+            request_doc = {
+                'user_id': user_id,
+                'type': vip_type,
+                'status': 'pending',
+                'submitted_at': time.time(),
+                'details': details
+            }
+            # Update existing pending if any, or insert new
+            self.vip_requests_collection.update_one(
+                {'user_id': user_id, 'status': 'pending'},
+                {'$set': request_doc},
+                upsert=True
+            )
+        except Exception as e:
+            logger.error(f"Error creating vip request: {e}")
+
+    def update_vip_request_status(self, user_id: int, status: str, admin_id: int, reason: str = None):
+        """Update status of pending VIP request"""
+        try:
+            update_data = {
+                'status': status,
+                'reviewed_by': admin_id,
+                'reviewed_at': time.time()
+            }
+            if reason:
+                update_data['rejection_reason'] = reason
+                
+            self.vip_requests_collection.update_one(
+                {'user_id': user_id, 'status': 'pending'},
+                {'$set': update_data}
+            )
+        except Exception as e:
+            logger.error(f"Error updating vip request: {e}")
 
     def close(self):
         """Close MongoDB connection"""
