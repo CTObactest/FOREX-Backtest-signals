@@ -6640,11 +6640,17 @@ class BroadcastBot:
         user_id = int(user_id_str)
 
         if action == "approve":
+            # 1. Grant Access
             self.db.add_subscriber(user_id)
+            
+            # 2. FIX: Update Request Status in DB so app knows it's done
+            self.db.update_vip_request_status(user_id, 'approved', admin_id)
+
             self.db.log_activity(admin_id, 'vip_approved', {'user_id': user_id})
             self.admin_duty_manager.credit_duty_for_action(admin_id, 'vip_approved')
-
             self.engagement_tracker.update_engagement(user_id, 'vip_subscribed')
+            
+            # 3. Update Admin Message (Handle Caption vs Text)
             approved_text = f"\n\n--- ✅ Approved by {query.from_user.first_name or admin_id} ---"
             
             if query.message.caption:
@@ -6665,6 +6671,8 @@ class BroadcastBot:
         elif action == "decline":
             context.user_data['user_to_decline'] = user_id
             context.user_data['admin_name'] = query.from_user.first_name or admin_id
+            
+            # Store message context safely (Handle Caption vs Text)
             if query.message.caption:
                 context.user_data['original_message_text'] = query.message.caption
             else:
@@ -6672,10 +6680,9 @@ class BroadcastBot:
             
             context.user_data['original_message_id'] = query.message.message_id
             context.user_data['is_photo_message'] = bool(query.message.photo)
+            
             await query.edit_message_reply_markup(reply_markup=None)
             await context.bot.send_message(chat_id=admin_id, text="Please enter the reason for declining this request.")
-            # ---------------------------------------------
-            
             return WAITING_DECLINE_REASON
 
     async def receive_decline_reason(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -6686,11 +6693,12 @@ class BroadcastBot:
         admin_name = context.user_data.get('admin_name', admin_id)
         original_message_text = context.user_data.get('original_message_text', "VIP Request")
         original_message_id = context.user_data.get('original_message_id')
-        is_photo_message = context.user_data.get('is_photo_message', False) # Retrieve flag
+        is_photo_message = context.user_data.get('is_photo_message', False)
 
         if not user_id_to_decline:
             await update.message.reply_text("Error: Could not find the user to decline. Please try again.")
             return ConversationHandler.END
+        self.db.update_vip_request_status(user_id_to_decline, 'rejected', admin_id, reason=reason)
 
         self.db.log_activity(admin_id, 'vip_declined', {'user_id': user_id_to_decline, 'reason': reason})
 
@@ -6703,7 +6711,6 @@ class BroadcastBot:
             logger.error(f"Failed to notify user {user_id_to_decline} of decline: {e}")
         
         await update.message.reply_text(f"The user {user_id_to_decline} has been notified of the decline.")
-        
         if original_message_id:
             try:
                 declined_append = f"\n\n--- ❌ Declined by {admin_name} ---\nReason: {reason}"
@@ -6723,11 +6730,7 @@ class BroadcastBot:
             except Exception as e:
                  logger.error(f"Failed to edit original decline message: {e}")
 
-        context.user_data.pop('user_to_decline', None)
-        context.user_data.pop('admin_name', None)
-        context.user_data.pop('original_message_text', None)
-        context.user_data.pop('original_message_id', None)
-        context.user_data.pop('is_photo_message', None)
+        context.user_data.clear()
         return ConversationHandler.END
         
     async def receive_schedule_time(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
