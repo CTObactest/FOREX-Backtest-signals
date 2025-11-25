@@ -6645,13 +6645,17 @@ class BroadcastBot:
             self.admin_duty_manager.credit_duty_for_action(admin_id, 'vip_approved')
 
             self.engagement_tracker.update_engagement(user_id, 'vip_subscribed')
+            approved_text = f"\n\n--- ✅ Approved by {query.from_user.first_name or admin_id} ---"
             
-            await query.edit_message_text(f"{query.message.text}\n\n--- ✅ Approved by {query.from_user.first_name or admin_id} ---")
-            
+            if query.message.caption:
+                await query.edit_message_caption(caption=f"{query.message.caption}{approved_text}")
+            else:
+                await query.edit_message_text(f"{query.message.text}{approved_text}")
+
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text="Congratulations! Your Currencies VIP request has been approved. You are now a subscriber."
+                    text="Congratulations! Your VIP request has been approved. You are now a subscriber."
                 )
             except Exception as e:
                 logger.error(f"Failed to notify user {user_id} of approval: {e}")
@@ -6661,9 +6665,17 @@ class BroadcastBot:
         elif action == "decline":
             context.user_data['user_to_decline'] = user_id
             context.user_data['admin_name'] = query.from_user.first_name or admin_id
-            context.user_data['original_message_text'] = query.message.text
+            if query.message.caption:
+                context.user_data['original_message_text'] = query.message.caption
+            else:
+                context.user_data['original_message_text'] = query.message.text
+            
             context.user_data['original_message_id'] = query.message.message_id
-            await query.edit_message_text("Please enter the reason for declining this request.")
+            context.user_data['is_photo_message'] = bool(query.message.photo)
+            await query.edit_message_reply_markup(reply_markup=None)
+            await context.bot.send_message(chat_id=admin_id, text="Please enter the reason for declining this request.")
+            # ---------------------------------------------
+            
             return WAITING_DECLINE_REASON
 
     async def receive_decline_reason(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -6674,7 +6686,7 @@ class BroadcastBot:
         admin_name = context.user_data.get('admin_name', admin_id)
         original_message_text = context.user_data.get('original_message_text', "VIP Request")
         original_message_id = context.user_data.get('original_message_id')
-
+        is_photo_message = context.user_data.get('is_photo_message', False) # Retrieve flag
 
         if not user_id_to_decline:
             await update.message.reply_text("Error: Could not find the user to decline. Please try again.")
@@ -6685,7 +6697,7 @@ class BroadcastBot:
         try:
             await context.bot.send_message(
                 chat_id=user_id_to_decline,
-                text=f"We regret to inform you that your Currencies VIP request has been declined.\n\nReason: {reason}"
+                text=f"We regret to inform you that your VIP request has been declined.\n\nReason: {reason}"
             )
         except Exception as e:
             logger.error(f"Failed to notify user {user_id_to_decline} of decline: {e}")
@@ -6694,19 +6706,28 @@ class BroadcastBot:
         
         if original_message_id:
             try:
-                await context.bot.edit_message_text(
-                    chat_id=admin_id,
-                    message_id=original_message_id,
-                    text=f"{original_message_text}\n\n--- ❌ Declined by {admin_name} ---"
-                )
+                declined_append = f"\n\n--- ❌ Declined by {admin_name} ---\nReason: {reason}"
+                
+                if is_photo_message:
+                    await context.bot.edit_message_caption(
+                        chat_id=admin_id,
+                        message_id=original_message_id,
+                        caption=f"{original_message_text}{declined_append}"
+                    )
+                else:
+                    await context.bot.edit_message_text(
+                        chat_id=admin_id,
+                        message_id=original_message_id,
+                        text=f"{original_message_text}{declined_append}"
+                    )
             except Exception as e:
                  logger.error(f"Failed to edit original decline message: {e}")
-
 
         context.user_data.pop('user_to_decline', None)
         context.user_data.pop('admin_name', None)
         context.user_data.pop('original_message_text', None)
         context.user_data.pop('original_message_id', None)
+        context.user_data.pop('is_photo_message', None)
         return ConversationHandler.END
         
     async def receive_schedule_time(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
