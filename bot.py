@@ -4623,7 +4623,10 @@ class BroadcastBot:
         medals = ["🥇", "🥈", "🥉"]
         
         for i, stat in enumerate(stats[:10]):
-            rank_icon = medals[i] if i < 3 else f"<b>{i+1}.</b>"
+            if i < 3:
+                rank_icon = medals[i]
+            else:
+                rank_icon = f"<b>#{i+1}</b>"
             
             user_doc = self.db.users_collection.find_one({'user_id': stat['_id']})
             is_public = user_doc.get('leaderboard_public', True) if user_doc else True
@@ -4664,6 +4667,7 @@ class BroadcastBot:
                     await asyncio.sleep(0.05)
                 except Exception as e:
                     logger.error(f"Failed to send leaderboard to {user_id}: {e}")
+                    
     async def _get_admin_performance_comment(self, score: int) -> str:
         """Generate a brutally honest comment on admin performance based ONLY on score"""
         if score == 0:
