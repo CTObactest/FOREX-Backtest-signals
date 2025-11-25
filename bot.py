@@ -5578,10 +5578,16 @@ class BroadcastBot:
                 return web.json_response({'error': str(e)}, status=500)
 
         async def api_get_broadcasts(request):
-            """API Endpoint: Get Unified Feed (Signals + Admin + Education + Leaderboard)"""
+            """
+            API Endpoint: Get Unified Feed.
+            ?vip=true -> Returns ONLY broadcasts targeting 'subscribers'.
+            Default   -> Returns Signals + Education + Broadcasts targeting 'all' or 'nonsubscribers'.
+            """
             try:
                 results = []
                 current_time = time.time()
+                
+                is_vip_request = request.query.get('vip') == 'true'
 
                 def format_time_ago(ts):
                     diff = current_time - ts
@@ -5602,6 +5608,34 @@ class BroadcastBot:
                             image_url = f"/api/media/{file_id}"
                     return content, image_url
 
+                if is_vip_request:
+                    broadcasts_cursor = self.db.broadcast_approvals_collection.find(
+                        {
+                            'status': 'approved', 
+                            'target': 'subscribers' 
+                        }
+                    ).sort('reviewed_at', -1).limit(20)
+
+                    for bc in broadcasts_cursor:
+                        msg_data = bc.get('message_data', {})
+                        content, image_url = extract_data(msg_data)
+                        
+                        if not content.startswith("🔒"):
+                             content = f"🔒 <b>VIP Update</b>\n\n{content}"
+
+                        results.append({
+                            'id': str(bc['_id']),
+                            'type': 'broadcast',
+                            'content': content,
+                            'rating': 0,
+                            'timestamp_raw': bc.get('reviewed_at', 0),
+                            'timestamp': format_time_ago(bc.get('reviewed_at', 0)),
+                            'author': 'PipSage VIP', 
+                            'image': image_url
+                        })
+                    
+                    return web.json_response(results)
+
                 signals_cursor = self.db.signal_suggestions_collection.find(
                     {'status': 'approved'}
                 ).sort('reviewed_at', -1).limit(15)
@@ -5620,8 +5654,12 @@ class BroadcastBot:
                         'author': sig.get('suggester_name', 'Unknown Trader'),
                         'image': image_url
                     })
+
                 broadcasts_cursor = self.db.broadcast_approvals_collection.find(
-                    {'status': 'approved'}
+                    {
+                        'status': 'approved', 
+                        'target': {'$in': ['all', 'nonsubscribers']} 
+                    }
                 ).sort('reviewed_at', -1).limit(10)
 
                 for bc in broadcasts_cursor:
