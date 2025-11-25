@@ -5125,6 +5125,90 @@ class BroadcastBot:
     def create_api_server(self):
         """Create API server for Mobile App Integration"""
         
+        async def api_send_code(request):
+            """API Endpoint: Send Verification Code to Telegram"""
+            try:
+                data = await request.json()
+                query = data.get('username', '').strip().replace('@', '')
+                
+                if not query:
+                    return web.json_response({'error': 'Username or ID required'}, status=400)
+
+                # Resolve User
+                user = None
+                if query.isdigit():
+                    user = self.db.users_collection.find_one({'user_id': int(query)})
+                else:
+                    user = self.db.users_collection.find_one(
+                        {'username': {'$regex': f'^{re.escape(query)}$', '$options': 'i'}}
+                    )
+                
+                # Handling User Not Found - Specific Error for Frontend
+                if not user:
+                    return web.json_response({
+                        'error': 'user_not_found',
+                        'message': 'User not found. Please start the bot first.',
+                        'bot_link': 'https://t.me/Pipsage_bot'
+                    }, status=404)
+
+                user_id = user['user_id']
+                
+                # Generate Code
+                code = str(random.randint(100000, 999999))
+                expiry = time.time() + 300 # 5 mins
+
+                self.db.users_collection.update_one(
+                    {'user_id': user_id},
+                    {'$set': {'auth_code': code, 'auth_code_expiry': expiry}}
+                )
+
+                # Send via Telegram
+                try:
+                    await self.application.bot.send_message(
+                        chat_id=user_id,
+                        text=f"🔐 <b>PipSage Login Code</b>\n\nYour verification code is: <code>{code}</code>\n\nValid for 5 minutes.",
+                        parse_mode='HTML'
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to send code to {user_id}: {e}")
+                    return web.json_response({'error': 'Could not send code to Telegram. Is the bot blocked?'}, status=500)
+
+                return web.json_response({'success': True, 'user_id': user_id})
+
+            except Exception as e:
+                return web.json_response({'error': str(e)}, status=500)
+
+        async def api_verify_code(request):
+            """API Endpoint: Verify Code"""
+            try:
+                data = await request.json()
+                user_id = data.get('user_id')
+                code = data.get('code')
+
+                if not user_id or not code:
+                    return web.json_response({'error': 'Missing parameters'}, status=400)
+
+                user = self.db.users_collection.find_one({'user_id': int(user_id)})
+                
+                if not user or 'auth_code' not in user:
+                    return web.json_response({'error': 'Invalid request'}, status=400)
+
+                if str(user['auth_code']) != str(code):
+                     return web.json_response({'error': 'Invalid code'}, status=401)
+                
+                if time.time() > user.get('auth_code_expiry', 0):
+                     return web.json_response({'error': 'Code expired'}, status=401)
+
+                # Clear code after success
+                self.db.users_collection.update_one(
+                    {'user_id': int(user_id)}, 
+                    {'$unset': {'auth_code': "", 'auth_code_expiry': ""}}
+                )
+
+                return web.json_response({'success': True, 'user_id': user_id})
+            except Exception as e:
+                return web.json_response({'error': str(e)}, status=500)
+                
         async def api_get_stats(request):
             try:
                 try:
@@ -5133,6 +5217,13 @@ class BroadcastBot:
                     return web.json_response({'error': 'Invalid User ID format'}, status=400)
 
                 user = self.db.users_collection.find_one({'user_id': user_id})
+                vip_request = self.db.get_latest_vip_request(user_id)
+                vip_req_status = 'none'
+                vip_rejection_reason = None
+                
+                if vip_request:
+                    vip_req_status = vip_request.get('status', 'none')
+                    vip_rejection_reason = vip_request.get('rejection_reason')
             
                 if not user:
                     print(f"⚠️ Warning: User ID {user_id} not found in DB. Using defaults.")
@@ -5191,6 +5282,8 @@ class BroadcastBot:
                 data = {
                     'username': username,
                     'is_vip': is_vip,
+                    'vip_request_status': vip_req_status,
+                    'vip_rejection_reason': vip_rejection_reason,
                     'rating': round(float(avg_rating), 2),
                     'total_signals': signal_stats.get('total', 0),
                     'approved_signals': signal_stats.get('approved', 0),
@@ -5309,8 +5402,8 @@ class BroadcastBot:
             """
             API Endpoint: Handle VIP Subscriptions
             1. Checks Subscription Status First (Unlocks Frontend if already VIP).
-            2. Deriv: Tries Auto-Verification (CR + OCR). If fail -> Forward to Admin.
-            3. Currencies: Forwards to Admin.
+            2. Deriv: Tries Auto-Verification (CR + OCR). If fail -> Store Request -> Forward to Admin.
+            3. Currencies: Store Request -> Forwards to Admin.
             """
             try:
                 reader = await request.multipart()
@@ -5362,7 +5455,7 @@ class BroadcastBot:
                     elif self.db.is_cr_number_used(cr_number):
                         fail_reason.append(f"CR {cr_number} already used")
                     
-                    # B. Check Balance via OCR (Only if CR is okay so far, or just log it)
+                    # B. Check Balance via OCR
                     detected_balance = 0.0
                     try:
                         import pytesseract
@@ -5374,7 +5467,6 @@ class BroadcastBot:
                         matches = re.findall(r'\$?(\d[\d,]*\.\d{2})', text)
                         
                         if matches:
-                            # Clean string and convert to float
                             detected_balance = float(matches[0].replace(',', ''))
                             if detected_balance < 50:
                                 fail_reason.append(f"Balance too low (${detected_balance})")
@@ -5396,7 +5488,10 @@ class BroadcastBot:
                         self.db.add_subscriber(user_id)
                         self.engagement_tracker.update_engagement(user_id, 'vip_subscribed')
                         
-                        # Notify user
+                        # Optionally create an "approved" request record for history
+                        self.db.create_vip_request(user_id, 'deriv', {'cr_number': cr_number})
+                        self.db.update_vip_request_status(user_id, 'approved', 0, reason="Auto-verified")
+
                         try:
                             await self.application.bot.send_message(
                                 chat_id=user_id,
@@ -5408,9 +5503,13 @@ class BroadcastBot:
                         return web.json_response({'success': True, 'message': 'Deriv VIP Activated Automatically'})
                     
                     else:
-                        # FAILURE: Forward to Admin (Fallback)
-                        reason_str = ", ".join(fail_reason)
+                        # FAILURE: Store Pending Request & Forward to Admin (Fallback)
                         
+                        # 1. Store Request in DB
+                        details = {'cr_number': cr_number}
+                        self.db.create_vip_request(user_id, 'deriv', details)
+                        
+                        reason_str = ", ".join(fail_reason)
                         user_info = (
                             f"⚠️ <b>Deriv Auto-Verify Failed</b>\n"
                             f"Forwarded for Manual Review.\n\n"
@@ -5429,7 +5528,7 @@ class BroadcastBot:
                         ]
                         reply_markup = InlineKeyboardMarkup(keyboard)
 
-                        # Send to Super Admins
+                        # 2. Notify Admins
                         sent_count = 0
                         for admin_id in self.super_admin_ids:
                             try:
@@ -5462,6 +5561,15 @@ class BroadcastBot:
                     if not all([broker, acc_name, acc_num, tg_handle]):
                         return web.json_response({'error': 'Missing fields for Currencies request'}, status=400)
 
+                    # 1. Store Request in DB
+                    details = {
+                        'broker': broker,
+                        'account_name': acc_name,
+                        'account_number': acc_num,
+                        'telegram_id': tg_handle
+                    }
+                    self.db.create_vip_request(user_id, 'currencies', details)
+
                     user_info = (
                         f"📱 <b>New App VIP Request (Currencies)</b>\n\n"
                         f"<b>Broker:</b> {broker}\n"
@@ -5480,6 +5588,7 @@ class BroadcastBot:
                     ]
                     reply_markup = InlineKeyboardMarkup(keyboard)
 
+                    # 2. Notify Admins
                     sent_count = 0
                     for admin_id in self.super_admin_ids:
                         try:
