@@ -6038,6 +6038,73 @@ class BroadcastBot:
             except Exception as e:
                 logger.error(f"API Settings Update Error: {e}")
                 return web.json_response({'error': str(e)}, status=500)
+
+        async def api_privacy_policy_page(request):
+            """Web Page for Privacy Policy (Play Store Requirement)"""
+            html_content = """
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Privacy Policy - PipSage</title>
+                <meta name="viewport" content="width=device-width, initial-scale=1">
+                <style>
+                    body { font-family: sans-serif; padding: 20px; max-width: 800px; margin: 0 auto; line-height: 1.6; color: #333; }
+                    h1 { color: #2563EB; }
+                    h2 { color: #111827; margin-top: 20px; }
+                    ul { padding-left: 20px; }
+                    li { margin-bottom: 8px; }
+                    .footer { margin-top: 40px; font-size: 0.9em; color: #666; border-top: 1px solid #eee; padding-top: 20px; }
+                </style>
+            </head>
+            <body>
+                <h1>Privacy Policy</h1>
+                <p><strong>Last updated: November 26, 2025</strong></p>
+                
+                <p>PipSage ("we", "our", or "us") is committed to protecting your privacy. This Privacy Policy explains how we collect, use, disclosure, and safeguard your information when you use our mobile application and related Telegram services.</p>
+
+                <h2>1. Information We Collect</h2>
+                <p>To provide our services, we collect minimal data linked to your Telegram account:</p>
+                <ul>
+                    <li><strong>Account Information:</strong> We collect your Telegram User ID, Username, and First Name to authenticate you and display your profile.</li>
+                    <li><strong>Trading Data:</strong> If you choose to submit trading signals, we store the details of those signals (pair, entry, direction) and their performance outcomes.</li>
+                    <li><strong>Usage Data:</strong> We may collect anonymous logs regarding command usage to improve bot performance and prevent abuse.</li>
+                </ul>
+
+                <h2>2. How We Use Your Information</h2>
+                <p>We use the information we collect to:</p>
+                <ul>
+                    <li>Authenticate your access to the mobile application and VIP groups.</li>
+                    <li>Calculate and display your trading performance on our public or private leaderboards.</li>
+                    <li>Send you important notifications (which you can opt-out of via Settings).</li>
+                    <li>Facilitate the "Connect Telegram" login feature.</li>
+                </ul>
+
+                <h2>3. Data Sharing</h2>
+                <p>We do not sell, trade, or rent your personal identification information to others. We may share generic aggregated demographic information not linked to any personal identification information regarding visitors and users with our business partners.</p>
+
+                <h2>4. Data Security</h2>
+                <p>We adopt appropriate data collection, storage, and processing practices and security measures to protect against unauthorized access, alteration, disclosure, or destruction of your personal information.</p>
+
+                <h2>5. Your Rights & Account Deletion</h2>
+                <p>You have the right to request the deletion of your account and all associated data at any time. You can do this by:</p>
+                <ul>
+                    <li>Visiting our deletion portal: <a href="/delete-account">/delete-account</a></li>
+                    <li>Contacting support via our Telegram Bot.</li>
+                </ul>
+
+                <h2>6. Third-Party Services</h2>
+                <p>Our app may use third-party services (e.g., Telegram API, Finnhub for news) which have their own privacy policies. We encourage you to review them.</p>
+
+                <h2>7. Contact Us</h2>
+                <p>If you have any questions about this Privacy Policy, please contact us via our official Telegram channel.</p>
+
+                <div class="footer">
+                    &copy; 2025 PipSage. All rights reserved.
+                </div>
+            </body>
+            </html>
+            """
+            return web.Response(text=html_content, content_type='text/html')
         
         async def api_get_settings(request):
              """API Endpoint: Get User Settings"""
@@ -6080,6 +6147,9 @@ class BroadcastBot:
         app.router.add_post('/api/vip/request', api_vip_request)
         app.router.add_post('/api/auth/send_code', api_send_code)
         app.router.add_post('/api/auth/verify_code', api_verify_code)
+        app.router.add_get('/delete-account', api_delete_account_page)
+        app.router.add_post('/api/delete-account-submit', api_delete_account_submit)
+        app.router.add_get('/privacy', api_privacy_policy_page)
         
         import aiohttp_cors
         cors = aiohttp_cors.setup(app, defaults={
