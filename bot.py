@@ -5322,6 +5322,62 @@ class BroadcastBot:
             
                 return web.json_response({'error': 'Internal Server Error', 'details': str(e)}, status=500)
 
+        async def api_delete_account_page(request):
+            """Web Page for Play Store Data Deletion Requirement"""
+            html_content = """
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Delete Account - PipSage</title>
+                <meta name="viewport" content="width=device-width, initial-scale=1">
+                <style>
+                    body { font-family: sans-serif; padding: 20px; max-width: 600px; margin: 0 auto; line-height: 1.6; }
+                    h1 { color: #2563EB; }
+                    form { background: #f4f4f4; padding: 20px; border-radius: 8px; }
+                    label { display: block; margin-bottom: 8px; font-weight: bold; }
+                    input { width: 100%; padding: 10px; margin-bottom: 20px; border: 1px solid #ccc; border-radius: 4px; }
+                    button { background: #dc2626; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-size: 16px; }
+                    .note { font-size: 0.9em; color: #666; margin-top: 20px; }
+                </style>
+            </head>
+            <body>
+                <h1>Request Account Deletion</h1>
+                <p>To comply with data privacy laws, you can request the deletion of your PipSage account and associated data.</p>
+                
+                <form action="/api/delete-account-submit" method="post">
+                    <label>Telegram User ID or Username:</label>
+                    <input type="text" name="user_identifier" required placeholder="@username or 12345678">
+                    
+                    <label>Reason (Optional):</label>
+                    <input type="text" name="reason" placeholder="Why are you leaving?">
+                    
+                    <button type="submit">Submit Deletion Request</button>
+                </form>
+
+                <div class="note">
+                    <strong>Note:</strong> This will flag your account for deletion. Our admins will verify the request within 48 hours. You will lose access to VIP signals and your leaderboard stats.
+                </div>
+            </body>
+            </html>
+            """
+            return web.Response(text=html_content, content_type='text/html')
+
+        async def api_delete_account_submit(request):
+            """Handle the deletion request"""
+            data = await request.post()
+            identifier = data.get('user_identifier')
+            logger.info(f"ACCOUNT DELETION REQUEST: {identifier}")
+            for admin_id in self.super_admin_ids:
+                try:
+                    await self.application.bot.send_message(
+                        chat_id=admin_id,
+                        text=f"🗑️ <b>Deletion Request</b>\nUser: {identifier}\nReason: {data.get('reason')}",
+                        parse_mode='HTML'
+                    )
+                except: pass
+
+            return web.Response(text="<h1>Request Received</h1><p>Your request has been logged. Your data will be removed within 48 hours.</p>", content_type='text/html')
+        
         async def api_get_news(request):
             """API Endpoint: Get Forex News with Caching & Validation"""
             if not self.finnhub_client:
