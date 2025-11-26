@@ -3309,20 +3309,26 @@ class BroadcastBot:
     def clean_empty_signal_fields(self, text: str) -> str:
         """
         Removes lines that contain keys but no values.
-        Example: Removes "REASON: " if no reason was typed.
+        Cleans up excessive newlines.
         """
         if not text:
             return ""
-            
+
         lines = text.split('\n')
         cleaned_lines = []
-        
+
         for line in lines:
-            if re.match(r'^[^:]+:\s*$', line.strip()):
+            stripped = line.strip()
+            if not stripped:
+                cleaned_lines.append("") 
                 continue
+            if re.match(r'^[^:]+:\s*(?:null|undefined|None)?$', stripped, re.IGNORECASE):
+                continue
+
             cleaned_lines.append(line)
             
-        return '\n'.join(cleaned_lines).strip()
+        result = '\n'.join(cleaned_lines).strip()
+        return re.sub(r'\n{3,}', '\n\n', result)
 
     async def validate_signal_image(self, photo_file: 'telegram.PhotoSize') -> (bool, str, str):
         """Validate signal image - MORE LENIENT"""
