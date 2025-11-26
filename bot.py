@@ -699,6 +699,8 @@ class MongoDBHandler:
             self.used_cr_numbers_collection.create_index('cr_number', unique=True)
             self.vip_requests_collection = self.db['vip_requests']
             self.vip_requests_collection.create_index([('user_id', 1), ('status', 1)])
+            self.notifications_collection = self.db['user_notifications']
+            self.notifications_collection.create_index([('user_id', 1), ('timestamp', -1)])
 
             logger.info("Successfully connected to MongoDB")
         except (ConnectionFailure, ServerSelectionTimeoutError) as e:
@@ -766,6 +768,35 @@ class MongoDBHandler:
         except Exception as e:
             logger.error(f"Error checking subscriber status for {user_id}: {e}")
             return False
+
+    def save_notification(self, user_id: int, title: str, body: str, data: dict = None):
+        """Save notification to history"""
+        try:
+            notification = {
+                'user_id': user_id,
+                'title': title,
+                'body': body,
+                'data': data or {},
+                'read': False,
+                'timestamp': time.time()
+            }
+            self.notifications_collection.insert_one(notification)
+        except Exception as e:
+            logger.error(f"Error saving notification: {e}")
+
+    def get_user_notifications(self, user_id: int, limit: int = 20) -> List[Dict]:
+        """Fetch notification history"""
+        try:
+            cursor = self.notifications_collection.find(
+                {'user_id': user_id},
+                {'_id': 0}
+            ).sort('timestamp', -1).limit(limit)
+            return list(cursor)
+        except Exception as e:
+            logger.error(f"Error fetching notifications: {e}")
+            return []
+
+    
 
     def get_all_users(self) -> set:
         """Get all user IDs"""
@@ -4771,8 +4802,7 @@ class BroadcastBot:
             message += "• Let's increase our activity. Users depend on us! 📈\n"
         
         message += "\n<i>Remember: Quality over quantity. Every interaction matters.</i>"
-        
-        # Send ONLY to admins
+
         target_admins = self.db.get_all_admin_ids()
         for admin_id in target_admins:
             try:
@@ -4920,7 +4950,6 @@ class BroadcastBot:
         """Send duty assignment notification to admin"""
         duty_info = duty_data['duty_info']
         
-        # Format task list
         tasks_text = "\n".join([f"  • {task}" for task in duty_info['tasks']])
         
         priority_emoji = {
@@ -5184,7 +5213,7 @@ class BroadcastBot:
                  await update.message.reply_text("✅ Content saved to educational database!")
 
     async def send_push_to_users(self, user_ids: list, title: str, body: str, data: dict = None):
-        """Send Expo Push Notifications"""
+        """Send Expo Push Notifications, Save to History, and Handle Errors"""
         if not user_ids:
             return
 
@@ -5194,9 +5223,15 @@ class BroadcastBot:
             )
             
             notifications = []
+            token_map = {} 
+
             for user in users:
+                user_id = user.get('user_id')
                 token = user.get('push_token')
-                if not token: continue
+                self.db.save_notification(user_id, title, body, data)
+
+                if not token or not str(token).startswith('ExponentPushToken'):
+                    continue
                 
                 note = {
                     'to': token,
@@ -5208,7 +5243,9 @@ class BroadcastBot:
                 }
                 if data:
                     note['data'] = data
+                
                 notifications.append(note)
+                token_map[len(notifications) - 1] = user_id
 
             if not notifications:
                 return
@@ -5227,13 +5264,32 @@ class BroadcastBot:
                                 'Content-Type': 'application/json'
                             }
                         ) as response:
-                            if response.status != 200:
-                                logger.error(f"Push notification failed: {await response.text()}")
+                            if response.status == 200:
+                                result = await response.json()
+                                data_array = result.get('data', [])
+                
+                                for idx, ticket in enumerate(data_array):
+                                    if ticket.get('status') == 'error':
+                                        details = ticket.get('details', {})
+                                        error_code = details.get('error')
+                                        
+                                        original_index = i + idx
+                                        failed_user_id = token_map.get(original_index)
+
+                                        if error_code == 'DeviceNotRegistered' and failed_user_id:
+                                            logger.info(f"Removing invalid push token for user {failed_user_id}")
+                                            self.db.users_collection.update_one(
+                                                {'user_id': failed_user_id},
+                                                {'$unset': {'push_token': ""}}
+                                            )
+                            else:
+                                logger.error(f"Push notification HTTP error: {response.status} - {await response.text()}")
+                                
                     except Exception as e:
                         logger.error(f"Error sending push batch: {e}")
 
         except Exception as e:
-            logger.error(f"Push notification error: {e}")
+            logger.error(f"Push notification critical error: {e}")
 
   
 
@@ -5249,7 +5305,6 @@ class BroadcastBot:
                 if not query:
                     return web.json_response({'error': 'Username or ID required'}, status=400)
 
-                # Resolve User
                 user = None
                 if query.isdigit():
                     user = self.db.users_collection.find_one({'user_id': int(query)})
@@ -5258,7 +5313,6 @@ class BroadcastBot:
                         {'username': {'$regex': f'^{re.escape(query)}$', '$options': 'i'}}
                     )
                 
-                # Handling User Not Found - Specific Error for Frontend
                 if not user:
                     return web.json_response({
                         'error': 'user_not_found',
@@ -5267,8 +5321,6 @@ class BroadcastBot:
                     }, status=404)
 
                 user_id = user['user_id']
-                
-                # Generate Code
                 code = str(random.randint(100000, 999999))
                 expiry = time.time() + 300 # 5 mins
 
@@ -5277,7 +5329,6 @@ class BroadcastBot:
                     {'$set': {'auth_code': code, 'auth_code_expiry': expiry}}
                 )
 
-                # Send via Telegram
                 try:
                     await self.application.bot.send_message(
                         chat_id=user_id,
@@ -5342,6 +5393,33 @@ class BroadcastBot:
                 else:
                     return web.json_response({'error': 'Database error'}, status=500)
             except Exception as e:
+                return web.json_response({'error': str(e)}, status=500)
+
+        async def api_get_notifications(request):
+            """API Endpoint: Get User Notification History"""
+            try:
+                user_id = request.match_info['user_id']
+                try: 
+                    user_id = int(user_id)
+                except: 
+                    return web.json_response({'error': 'Invalid ID'}, status=400)
+
+                notifications = self.db.get_user_notifications(user_id)
+                
+                results = []
+                for n in notifications:
+                    ts = n.get('timestamp', 0)
+                    results.append({
+                        'title': n.get('title'),
+                        'body': n.get('body'),
+                        'time': datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M'),
+                        'read': n.get('read', False),
+                        'data': n.get('data', {})
+                    })
+
+                return web.json_response(results)
+            except Exception as e:
+                logger.error(f"API Notifications Error: {e}")
                 return web.json_response({'error': str(e)}, status=500)
                 
         async def api_get_stats(request):
@@ -5618,8 +5696,6 @@ class BroadcastBot:
                 if not user_id:
                     return web.json_response({'error': 'User ID is required'}, status=400)
 
-                # --- 1. CHECK EXISTING SUBSCRIPTION ---
-                # This ensures SignalsScreen.js unlocks automatically if they try to join again
                 if self.db.is_subscriber(user_id):
                     return web.json_response({
                         'success': False, 
@@ -5627,7 +5703,6 @@ class BroadcastBot:
                         'is_vip': True
                     })
 
-                # --- 2. DERIV FLOW (Auto-Check with Admin Fallback) ---
                 if vip_type == 'deriv':
                     cr_number = data.get('cr_number', '').strip().upper()
                     
@@ -5636,17 +5711,14 @@ class BroadcastBot:
                     if not image_data:
                         return web.json_response({'error': 'Payment screenshot required'}, status=400)
 
-                    # --- Auto-Verification Logic ---
                     auto_verify_passed = False
                     fail_reason = []
 
-                    # A. Check CR Number Validity
                     if cr_number not in self.cr_numbers:
                         fail_reason.append(f"CR {cr_number} not in partner list")
                     elif self.db.is_cr_number_used(cr_number):
                         fail_reason.append(f"CR {cr_number} already used")
                     
-                    # B. Check Balance via OCR
                     detected_balance = 0.0
                     try:
                         import pytesseract
@@ -5668,18 +5740,14 @@ class BroadcastBot:
                         logger.error(f"OCR Error: {e}")
                         fail_reason.append("OCR Processing Failed")
 
-                    # C. Decision
                     if not fail_reason and detected_balance >= 50:
                         auto_verify_passed = True
 
-                    # --- Execution ---
                     if auto_verify_passed:
-                        # SUCCESS: Auto-Subscribe
                         self.db.mark_cr_number_as_used(cr_number, user_id)
                         self.db.add_subscriber(user_id)
                         self.engagement_tracker.update_engagement(user_id, 'vip_subscribed')
                         
-                        # Optionally create an "approved" request record for history
                         self.db.create_vip_request(user_id, 'deriv', {'cr_number': cr_number})
                         self.db.update_vip_request_status(user_id, 'approved', 0, reason="Auto-verified")
 
@@ -5694,9 +5762,7 @@ class BroadcastBot:
                         return web.json_response({'success': True, 'message': 'Deriv VIP Activated Automatically'})
                     
                     else:
-                        # FAILURE: Store Pending Request & Forward to Admin (Fallback)
-                        
-                        # 1. Store Request in DB
+                    
                         details = {'cr_number': cr_number}
                         self.db.create_vip_request(user_id, 'deriv', details)
                         
@@ -5719,7 +5785,6 @@ class BroadcastBot:
                         ]
                         reply_markup = InlineKeyboardMarkup(keyboard)
 
-                        # 2. Notify Admins
                         sent_count = 0
                         for admin_id in self.super_admin_ids:
                             try:
@@ -5742,7 +5807,6 @@ class BroadcastBot:
                         else:
                             return web.json_response({'error': 'Verification failed and could not contact admins.'}, status=500)
 
-                # --- 3. CURRENCIES FLOW (Manual) ---
                 elif vip_type == 'currencies':
                     broker = data.get('broker')
                     acc_name = data.get('account_name')
@@ -5752,7 +5816,6 @@ class BroadcastBot:
                     if not all([broker, acc_name, acc_num, tg_handle]):
                         return web.json_response({'error': 'Missing fields for Currencies request'}, status=400)
 
-                    # 1. Store Request in DB
                     details = {
                         'broker': broker,
                         'account_name': acc_name,
@@ -5779,7 +5842,6 @@ class BroadcastBot:
                     ]
                     reply_markup = InlineKeyboardMarkup(keyboard)
 
-                    # 2. Notify Admins
                     sent_count = 0
                     for admin_id in self.super_admin_ids:
                         try:
@@ -6061,7 +6123,7 @@ class BroadcastBot:
                 if stats:
                     lb_text = "🏆 <b>Top Traders (This Week)</b>\n\n"
                     medals = ["🥇", "🥈", "🥉"]
-                    for i, stat in enumerate(stats[:5]):
+                    for i, stat in enumerate(stats[:3]):
                         rank = medals[i] if i < 3 else f"#{i+1}"
                         name = stat['suggester_name']
                         lb_text += f"{rank} {name}: {stat['average_rating']:.1f}⭐ ({stat['signal_count']} signals)\n"
@@ -6264,6 +6326,7 @@ class BroadcastBot:
         app.router.add_post('/api/delete-account-submit', api_delete_account_submit)
         app.router.add_get('/privacy', api_privacy_policy_page)
         app.router.add_post('/api/users/push_token', api_update_push_token)
+        app.router.add_get('/api/users/{user_id}/notifications', api_get_notifications)
         
         import aiohttp_cors
         cors = aiohttp_cors.setup(app, defaults={
