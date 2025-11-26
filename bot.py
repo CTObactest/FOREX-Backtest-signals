@@ -6884,17 +6884,23 @@ class BroadcastBot:
         user_id = int(user_id_str)
 
         if action == "approve":
-            # 1. Grant Access
             self.db.add_subscriber(user_id)
-            
-            # 2. FIX: Update Request Status in DB so app knows it's done
             self.db.update_vip_request_status(user_id, 'approved', admin_id)
 
             self.db.log_activity(admin_id, 'vip_approved', {'user_id': user_id})
             self.admin_duty_manager.credit_duty_for_action(admin_id, 'vip_approved')
             self.engagement_tracker.update_engagement(user_id, 'vip_subscribed')
             
-            # 3. Update Admin Message (Handle Caption vs Text)
+            try:
+                asyncio.create_task(self.send_push_to_users(
+                    [user_id],
+                    "VIP Request Approved! 🎉",
+                    "You now have access to premium signals. Restart the app to see changes.",
+                    data={'screen': 'Signals', 'initialTab': 'vip'}
+                ))
+            except Exception as e:
+                logger.error(f"Failed to send push notification for VIP approval: {e}")
+        
             approved_text = f"\n\n--- ✅ Approved by {query.from_user.first_name or admin_id} ---"
             
             if query.message.caption:
@@ -6916,7 +6922,6 @@ class BroadcastBot:
             context.user_data['user_to_decline'] = user_id
             context.user_data['admin_name'] = query.from_user.first_name or admin_id
             
-            # Store message context safely (Handle Caption vs Text)
             if query.message.caption:
                 context.user_data['original_message_text'] = query.message.caption
             else:
@@ -6942,9 +6947,19 @@ class BroadcastBot:
         if not user_id_to_decline:
             await update.message.reply_text("Error: Could not find the user to decline. Please try again.")
             return ConversationHandler.END
+            
         self.db.update_vip_request_status(user_id_to_decline, 'rejected', admin_id, reason=reason)
-
         self.db.log_activity(admin_id, 'vip_declined', {'user_id': user_id_to_decline, 'reason': reason})
+
+        try:
+            asyncio.create_task(self.send_push_to_users(
+                [user_id_to_decline],
+                "VIP Request Update",
+                f"Your VIP request was declined. Reason: {reason}",
+                data={'screen': 'Signals', 'initialTab': 'vip'}
+            ))
+        except Exception as e:
+            logger.error(f"Failed to send push notification for VIP decline: {e}")
 
         try:
             await context.bot.send_message(
@@ -6952,9 +6967,10 @@ class BroadcastBot:
                 text=f"We regret to inform you that your VIP request has been declined.\n\nReason: {reason}"
             )
         except Exception as e:
-            logger.error(f"Failed to notify user {user_id_to_decline} of decline: {e}")
+            logger.error(f"Failed to notify user {user_id_to_decline} of decline via Telegram: {e}")
         
         await update.message.reply_text(f"The user {user_id_to_decline} has been notified of the decline.")
+        
         if original_message_id:
             try:
                 declined_append = f"\n\n--- ❌ Declined by {admin_name} ---\nReason: {reason}"
