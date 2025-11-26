@@ -5155,6 +5155,58 @@ class BroadcastBot:
              if saved:
                  await update.message.reply_text("✅ Content saved to educational database!")
 
+    async def send_push_to_users(self, user_ids: list, title: str, body: str, data: dict = None):
+        """Send Expo Push Notifications"""
+        if not user_ids:
+            return
+
+        try:
+            users = self.db.users_collection.find(
+                {'user_id': {'$in': list(user_ids)}, 'push_token': {'$exists': True}}
+            )
+            
+            notifications = []
+            for user in users:
+                token = user.get('push_token')
+                if not token: continue
+                
+                note = {
+                    'to': token,
+                    'title': title,
+                    'body': body,
+                    'sound': 'default',
+                    'priority': 'high',
+                    'channelId': 'default',
+                }
+                if data:
+                    note['data'] = data
+                notifications.append(note)
+
+            if not notifications:
+                return
+                
+            async with aiohttp.ClientSession() as session:
+                chunk_size = 100
+                for i in range(0, len(notifications), chunk_size):
+                    chunk = notifications[i:i + chunk_size]
+                    try:
+                        async with session.post(
+                            'https://exp.host/--/api/v2/push/send',
+                            json=chunk,
+                            headers={
+                                'Accept': 'application/json',
+                                'Accept-Encoding': 'gzip, deflate',
+                                'Content-Type': 'application/json'
+                            }
+                        ) as response:
+                            if response.status != 200:
+                                logger.error(f"Push notification failed: {await response.text()}")
+                    except Exception as e:
+                        logger.error(f"Error sending push batch: {e}")
+
+        except Exception as e:
+            logger.error(f"Push notification error: {e}")
+
   
 
     def create_api_server(self):
@@ -5241,6 +5293,26 @@ class BroadcastBot:
                 )
 
                 return web.json_response({'success': True, 'user_id': user_id})
+            except Exception as e:
+                return web.json_response({'error': str(e)}, status=500)
+        
+        async def api_update_push_token(request):
+            """API Endpoint: Update User Push Token"""
+            try:
+                data = await request.json()
+                user_id = data.get('user_id')
+                token = data.get('token')
+
+                if not user_id or not token:
+                    return web.json_response({'error': 'Missing user_id or token'}, status=400)
+
+                try: user_id = int(user_id)
+                except: return web.json_response({'error': 'Invalid user_id'}, status=400)
+
+                if self.db.update_user_push_token(user_id, token):
+                    return web.json_response({'success': True})
+                else:
+                    return web.json_response({'error': 'Database error'}, status=500)
             except Exception as e:
                 return web.json_response({'error': str(e)}, status=500)
                 
@@ -6163,6 +6235,7 @@ class BroadcastBot:
         app.router.add_get('/delete-account', api_delete_account_page)
         app.router.add_post('/api/delete-account-submit', api_delete_account_submit)
         app.router.add_get('/privacy', api_privacy_policy_page)
+        app.router.add_post('/api/users/push_token', api_update_push_token)
         
         import aiohttp_cors
         cors = aiohttp_cors.setup(app, defaults={
