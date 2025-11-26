@@ -3643,7 +3643,7 @@ class BroadcastBot:
                 )
             
             return WAITING_SIGNAL_REJECTION_REASON
-
+            
     async def receive_signal_rating(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Receive signal rating, approve, and broadcast"""
         query = update.callback_query
@@ -3653,47 +3653,52 @@ class BroadcastBot:
         suggestion_id = context.user_data.pop('suggestion_to_rate', None)
 
         if not suggestion_id:
-            error_text = "❌ Error: Suggestion ID not found. Please try again."
-            if query.message.text:
-                await query.edit_message_text(text=error_text)
-            elif query.message.caption:
-                await query.edit_message_caption(caption=error_text)
             return ConversationHandler.END
 
         suggestion = self.db.get_suggestion_by_id(suggestion_id)
         if not suggestion:
-            error_text = "❌ Error: Suggestion not found."
-            if query.message.text:
-                await query.edit_message_text(text=error_text)
-            elif query.message.caption:
-                await query.edit_message_caption(caption=error_text)
             return ConversationHandler.END
 
         self.db.update_suggestion_status(suggestion_id, 'approved', query.from_user.id, rating=rating)
         self.admin_duty_manager.credit_duty_for_action(query.from_user.id, 'signal_approved')
-        
         suggester_id = suggestion['suggested_by']
         self.engagement_tracker.update_engagement(suggester_id, 'signal_approved')
         if rating == 5:
             self.engagement_tracker.update_engagement(suggester_id, 'signal_5_star')
         await self.achievement_system.check_and_award_achievements(suggester_id, context, self.db)
 
-        suggestion = self.db.get_suggestion_by_id(suggestion_id)
-
         await self.broadcast_signal(context, suggestion)
 
         try:
+            all_users = self.db.get_all_users()
+            push_target_ids = [uid for uid in all_users if self.notification_manager.should_notify(uid, 'signals')]
+            
+            msg_data = suggestion['message_data']
+            preview = "Check the app for details."
+            if msg_data['type'] == 'text':
+                preview = msg_data['content'][:50] + "..."
+            elif msg_data.get('caption'):
+                preview = msg_data['caption'][:50] + "..."
+                
+            asyncio.create_task(self.send_push_to_users(
+                push_target_ids,
+                "New Signal Approved! 🚀",
+                f"Rating: {rating}⭐\n{preview}",
+                data={'screen': 'Signals', 'initialTab': 'broadcasts'}
+            ))
+        except Exception as e:
+            logger.error(f"Failed to initiate push notification: {e}")
+        try:
             await context.bot.send_message(
                 chat_id=suggestion['suggested_by'],
-                text=f"✅ Your signal suggestion has been approved with a rating of {rating} stars and broadcasted! Thank you for your contribution."
+                text=f"✅ Your signal suggestion has been approved with a rating of {rating} stars!"
             )
-        except:
-            pass
+        except: pass
 
         await query.edit_message_reply_markup(reply_markup=None)
-        await query.message.reply_text(f"✅ Signal approved with {rating} stars and broadcasted to all users!")
+        await query.message.reply_text(f"✅ Signal approved with {rating} stars!")
         return ConversationHandler.END
-
+        
     async def receive_signal_rejection_reason(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Receive signal rejection reason, update status, and notify suggester"""
         reason = update.message.text
@@ -3982,6 +3987,23 @@ class BroadcastBot:
             target_users = admin_ids
         else:
             target_users = all_users
+        try:
+            push_target_ids = [uid for uid in target_users if self.notification_manager.should_notify(uid, 'broadcasts')]
+            
+            preview = "Tap to view."
+            if message_data['type'] == 'text':
+                preview = message_data['content'][:60] + "..."
+            elif message_data.get('caption'):
+                preview = message_data['caption'][:60] + "..."
+                
+            asyncio.create_task(self.send_push_to_users(
+                push_target_ids,
+                "New Announcement 📢",
+                preview,
+                data={'screen': 'Home'}
+            ))
+        except Exception as e:
+            logger.error(f"Failed to initiate broadcast push: {e}")
 
         success_count = 0
         failed_count = 0
