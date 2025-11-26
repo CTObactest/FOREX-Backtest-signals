@@ -1208,6 +1208,19 @@ class MongoDBHandler:
         except Exception as e:
             logger.error(f"Error marking CR number {cr_number} as used: {e}")
             return False
+            
+    def update_user_push_token(self, user_id: int, token: str):
+        """Update user's Expo push token"""
+        try:
+            self.users_collection.update_one(
+                {'user_id': user_id},
+                {'$set': {'push_token': token}},
+                upsert=True
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Error updating push token for {user_id}: {e}")
+            return False
 
     def get_suggester_stats(self, time_frame: str) -> List[Dict]:
         """Get signal suggester stats for a given time frame (weekly/monthly)"""
