@@ -5995,15 +5995,17 @@ class BroadcastBot:
 
         async def api_get_broadcasts(request):
             """
-            API Endpoint: Get Unified Feed.
-            ?vip=true -> Returns ONLY broadcasts targeting 'subscribers'.
-            Default   -> Returns Signals + Education + Broadcasts targeting 'all' or 'nonsubscribers'.
+            API Endpoint: Get Unified Feed with Reactions.
             """
             try:
                 results = []
                 current_time = time.time()
                 
                 is_vip_request = request.query.get('vip') == 'true'
+                
+                requesting_user_id = request.query.get('user_id')
+                try: requesting_user_id = int(requesting_user_id) if requesting_user_id else None
+                except: requesting_user_id = None
 
                 def format_time_ago(ts):
                     diff = current_time - ts
@@ -6024,20 +6026,28 @@ class BroadcastBot:
                             image_url = f"/api/media/{file_id}"
                     return content, image_url
 
+                def get_reaction_stats(item_id):
+                    str_id = str(item_id)
+                    count = self.db.db['reactions'].count_documents({'broadcast_id': str_id})
+                    is_liked = False
+                    if requesting_user_id:
+                        is_liked = self.db.db['reactions'].find_one({
+                            'broadcast_id': str_id, 
+                            'user_id': requesting_user_id
+                        }) is not None
+                    return count, is_liked
+
                 if is_vip_request:
                     broadcasts_cursor = self.db.broadcast_approvals_collection.find(
-                        {
-                            'status': 'approved', 
-                            'target': 'subscribers' 
-                        }
+                        {'status': 'approved', 'target': 'subscribers'}
                     ).sort('reviewed_at', -1).limit(20)
 
                     for bc in broadcasts_cursor:
                         msg_data = bc.get('message_data', {})
                         content, image_url = extract_data(msg_data)
+                        if not content.startswith("🔒"): content = f"🔒 <b>VIP Update</b>\n\n{content}"
                         
-                        if not content.startswith("🔒"):
-                             content = f"🔒 <b>VIP Update</b>\n\n{content}"
+                        likes, is_liked = get_reaction_stats(bc['_id'])
 
                         results.append({
                             'id': str(bc['_id']),
@@ -6047,9 +6057,10 @@ class BroadcastBot:
                             'timestamp_raw': bc.get('reviewed_at', 0),
                             'timestamp': format_time_ago(bc.get('reviewed_at', 0)),
                             'author': 'PipSage VIP', 
-                            'image': image_url
+                            'image': image_url,
+                            'likesCount': likes,
+                            'isLiked': is_liked
                         })
-                    
                     return web.json_response(results)
 
                 signals_cursor = self.db.signal_suggestions_collection.find(
@@ -6059,6 +6070,7 @@ class BroadcastBot:
                 for sig in signals_cursor:
                     msg_data = sig.get('message_data', {})
                     content, image_url = extract_data(msg_data)
+                    likes, is_liked = get_reaction_stats(sig['_id'])
                     
                     results.append({
                         'id': str(sig['_id']),
@@ -6068,23 +6080,23 @@ class BroadcastBot:
                         'timestamp_raw': sig.get('reviewed_at', 0),
                         'timestamp': format_time_ago(sig.get('reviewed_at', 0)),
                         'author': sig.get('suggester_name', 'Unknown Trader'),
-                        'image': image_url
+                        'image': image_url,
+                        'likesCount': likes,
+                        'isLiked': is_liked
                     })
 
                 broadcasts_cursor = self.db.broadcast_approvals_collection.find(
-                    {
-                        'status': 'approved', 
-                        'target': {'$in': ['all', 'nonsubscribers']} 
-                    }
+                    {'status': 'approved', 'target': {'$in': ['all', 'nonsubscribers']}}
                 ).sort('reviewed_at', -1).limit(10)
 
                 for bc in broadcasts_cursor:
                     msg_data = bc.get('message_data', {})
                     content, image_url = extract_data(msg_data)
-                    
                     if not content.startswith("📢"):
                         target = bc.get('target', 'Announcement').replace('_', ' ').title()
                         content = f"📢 {target}\n\n{content}"
+                    
+                    likes, is_liked = get_reaction_stats(bc['_id'])
 
                     results.append({
                         'id': str(bc['_id']),
@@ -6094,7 +6106,9 @@ class BroadcastBot:
                         'timestamp_raw': bc.get('reviewed_at', 0),
                         'timestamp': format_time_ago(bc.get('reviewed_at', 0)),
                         'author': 'PipSage Team', 
-                        'image': image_url
+                        'image': image_url,
+                        'likesCount': likes,
+                        'isLiked': is_liked
                     })
 
                 if hasattr(self, 'edu_content_manager') and self.edu_content_manager:
@@ -6107,16 +6121,21 @@ class BroadcastBot:
                         image_url = None
                         if edu['type'] == 'photo' and edu.get('file_id'):
                             image_url = f"/api/media/{edu['file_id']}"
+                        
+                        edu_id = f"edu_{edu.get('message_id')}"
+                        likes, is_liked = get_reaction_stats(edu_id)
 
                         results.append({
-                            'id': f"edu_{edu.get('message_id')}",
+                            'id': edu_id,
                             'type': 'education',
                             'content': f"📚 <b>Daily Tip</b>\n\n{content}",
                             'rating': 0,
                             'timestamp_raw': edu.get('saved_at', 0),
                             'timestamp': format_time_ago(edu.get('saved_at', 0)),
                             'author': 'PipSage Education',
-                            'image': image_url
+                            'image': image_url,
+                            'likesCount': likes,
+                            'isLiked': is_liked
                         })
 
                 stats = self.db.get_suggester_stats('weekly')
@@ -6136,7 +6155,9 @@ class BroadcastBot:
                         'timestamp_raw': current_time,
                         'timestamp': 'Live Now',
                         'author': 'System',
-                        'image': None
+                        'image': None,
+                        'likesCount': 0,
+                        'isLiked': False
                     })
 
                 results.sort(key=lambda x: x['timestamp_raw'], reverse=True)
@@ -6305,6 +6326,41 @@ class BroadcastBot:
              except Exception as e:
                  return web.json_response({'error': str(e)}, status=500)
 
+        async def api_toggle_reaction(request):
+            """API Endpoint: Toggle Like on a Broadcast/Signal"""
+            try:
+                broadcast_id = request.match_info['id']
+                data = await request.json()
+                user_id = data.get('user_id')
+
+                if not user_id:
+                    return web.json_response({'error': 'User ID required'}, status=400)
+                
+                try: user_id = int(user_id)
+                except: return web.json_response({'error': 'Invalid User ID'}, status=400)
+                existing = self.db.db['reactions'].find_one({
+                    'user_id': user_id,
+                    'broadcast_id': broadcast_id
+                })
+
+                action = 'added'
+                if existing:
+                    self.db.db['reactions'].delete_one({'_id': existing['_id']})
+                    action = 'removed'
+                else:
+                    self.db.db['reactions'].insert_one({
+                        'user_id': user_id,
+                        'broadcast_id': broadcast_id,
+                        'type': 'like',
+                        'timestamp': time.time()
+                    })
+                new_count = self.db.db['reactions'].count_documents({'broadcast_id': broadcast_id})
+                return web.json_response({'success': True, 'action': action, 'count': new_count})
+
+            except Exception as e:
+                logger.error(f"Reaction API Error: {e}")
+                return web.json_response({'error': str(e)}, status=500)
+
         async def health_check(request):
             return web.Response(text="PipSage API Running", status=200)
 
@@ -6327,6 +6383,7 @@ class BroadcastBot:
         app.router.add_get('/privacy', api_privacy_policy_page)
         app.router.add_post('/api/users/push_token', api_update_push_token)
         app.router.add_get('/api/users/{user_id}/notifications', api_get_notifications)
+        app.router.add_post('/api/broadcasts/{id}/react', api_toggle_reaction)
         
         import aiohttp_cors
         cors = aiohttp_cors.setup(app, defaults={
