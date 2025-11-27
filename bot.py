@@ -5427,7 +5427,7 @@ class BroadcastBot:
                     logger.warning(f"Missing data in push token update: user_id={user_id}, token={'present' if token else 'missing'}")
                     return web.json_response({'error': 'Missing user_id or token'}, status=400)
 
-                 try: 
+                try: 
                     user_id = int(user_id)
                 except: 
                     logger.warning(f"Invalid user_id format: {user_id}")
