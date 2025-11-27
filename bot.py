@@ -2127,41 +2127,6 @@ class AdminDutyManager:
         date_key = self.get_date_key()
         return self.admin_duties_collection.find_one({'date': date_key, 'admin_id': admin_id})
     
-    def get_completion_stats(self, days: int = 7) -> Dict:
-        """Get duty completion statistics"""
-        start_date = (datetime.now(timezone.utc) - timedelta(days=days)).strftime('%Y-%m-%d')
-        
-        pipeline = [
-            {'$match': {'date': {'$gte': start_date}}},
-            {
-                '$group': {
-                    '_id': '$admin_id',
-                    'admin_name': {'$first': '$admin_name'},
-                    'total_duties': {'$sum': 1},
-                    'completed_duties': {
-                        '$sum': {'$cond': [{'$eq': ['$completed', True]}, 1, 0]}
-                    }
-                }
-            },
-            {
-                '$project': {
-                    'admin_id': '$_id',
-                    'admin_name': 1,
-                    'total_duties': 1,
-                    'completed_duties': 1,
-                    'completion_rate': {
-                        '$multiply': [
-                            {'$divide': ['$completed_duties', '$total_duties']},
-                            100
-                        ]
-                    }
-                }
-            },
-            {'$sort': {'completion_rate': -1}}
-        ]
-        
-        results = list(self.admin_duties_collection.aggregate(pipeline))
-        return results
 class TwitterIntegration:
     """Auto-post bot content to Twitter with proper Threading"""
     
@@ -3758,6 +3723,15 @@ class BroadcastBot:
             reason=reason
         )
         self.admin_duty_manager.credit_duty_for_action(update.effective_user.id, 'signal_rejected')
+        try:
+            asyncio.create_task(self.send_push_to_users(
+                [suggestion['suggested_by']],
+                "Signal Suggestion Update",
+                f"Your signal was not approved. Reason: {reason}",
+                data={'screen': 'Signals', 'initialTab': 'my_progress'}
+            ))
+        except Exception as e:
+            logger.error(f"Failed to send push notification for signal rejection: {e}")
 
         try:
             await context.bot.send_message(
@@ -3769,7 +3743,6 @@ class BroadcastBot:
 
         await update.message.reply_text(f"❌ Signal rejected and reason recorded.")
         return ConversationHandler.END
-
     async def handle_quick_rejection_reason(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle quick rejection reason buttons"""
         query = update.callback_query
@@ -3801,7 +3774,15 @@ class BroadcastBot:
             reason=reason
         )
         self.admin_duty_manager.credit_duty_for_action(update.effective_user.id, 'signal_rejected')
-
+        try:
+            asyncio.create_task(self.send_push_to_users(
+                [suggestion['suggested_by']],
+                "Signal Suggestion Update",
+                f"Your signal was not approved. Reason: {reason}",
+                data={'screen': 'Signals', 'initialTab': 'my_progress'}
+            ))
+        except Exception as e:
+            logger.error(f"Failed to send push notification for signal rejection: {e}")
         try:
             await context.bot.send_message(
                 chat_id=suggestion['suggested_by'],
