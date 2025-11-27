@@ -5263,74 +5263,73 @@ class BroadcastBot:
             if not notifications:
                 logger.warning("⚠️ No valid push tokens found - no notifications sent")
                 return
-
-    async with aiohttp.ClientSession() as session:
-            chunk_size = 100
-            total_sent = 0
-            total_failed = 0
-            
-            for i in range(0, len(notifications), chunk_size):
-                chunk = notifications[i:i + chunk_size]
                 
-                try:
-                    async with session.post(
-                        'https://exp.host/--/api/v2/push/send',
-                        json=chunk,
-                        headers={
-                            'Accept': 'application/json',
-                            'Accept-Encoding': 'gzip, deflate',
-                            'Content-Type': 'application/json'
-                        },
-                        timeout=aiohttp.ClientTimeout(total=10)
-                    ) as response:
-                        
-                        if response.status == 200:
-                            result = await response.json()
-                            data_array = result.get('data', [])
+            async with aiohttp.ClientSession() as session:
+                chunk_size = 100
+                total_sent = 0
+                total_failed = 0
+                
+                for i in range(0, len(notifications), chunk_size):
+                    chunk = notifications[i:i + chunk_size]
+                    
+                    try:
+                        async with session.post(
+                            'https://exp.host/--/api/v2/push/send',
+                            json=chunk,
+                            headers={
+                                'Accept': 'application/json',
+                                'Accept-Encoding': 'gzip, deflate',
+                                'Content-Type': 'application/json'
+                            },
+                            timeout=aiohttp.ClientTimeout(total=10)
+                        ) as response:
                             
-                            logger.info(f"📤 Batch {i//chunk_size + 1}: Sent {len(chunk)} notifications")
-                            
-                            for idx, ticket in enumerate(data_array):
-                                original_index = i + idx
-                                user_id = token_map.get(original_index)
+                            if response.status == 200:
+                                result = await response.json()
+                                data_array = result.get('data', [])
                                 
-                                if ticket.get('status') == 'ok':
-                                    total_sent += 1
-                                    logger.debug(f"✅ User {user_id}: Push sent successfully")
+                                logger.info(f"📤 Batch {i//chunk_size + 1}: Sent {len(chunk)} notifications")
+                                
+                                for idx, ticket in enumerate(data_array):
+                                    original_index = i + idx
+                                    user_id = token_map.get(original_index)
                                     
-                                elif ticket.get('status') == 'error':
-                                    total_failed += 1
-                                    details = ticket.get('details', {})
-                                    error_code = details.get('error')
-                                    error_msg = ticket.get('message', 'Unknown error')
-                                    
-                                    logger.warning(f"❌ User {user_id}: Push failed - {error_code}: {error_msg}")
-                                    
-                                    # REMOVE INVALID TOKENS
-                                    if error_code == 'DeviceNotRegistered':
-                                        logger.info(f"🗑️ Removing invalid push token for user {user_id}")
-                                        self.db.users_collection.update_one(
-                                            {'user_id': user_id},
-                                            {'$unset': {'push_token': ""}}
-                                        )
-                        else:
-                            error_text = await response.text()
-                            logger.error(f"❌ Expo API HTTP {response.status}: {error_text[:200]}")
-                            total_failed += len(chunk)
-                            
-                except asyncio.TimeoutError:
-                    logger.error(f"⏱️ Timeout sending batch {i//chunk_size + 1}")
-                    total_failed += len(chunk)
-                except Exception as e:
-                    logger.error(f"💥 Error sending batch {i//chunk_size + 1}: {e}")
-                    total_failed += len(chunk)
+                                    if ticket.get('status') == 'ok':
+                                        total_sent += 1
+                                        logger.debug(f"✅ User {user_id}: Push sent successfully")
+                                        
+                                    elif ticket.get('status') == 'error':
+                                        total_failed += 1
+                                        details = ticket.get('details', {})
+                                        error_code = details.get('error')
+                                        error_msg = ticket.get('message', 'Unknown error')
+                                        
+                                        logger.warning(f"❌ User {user_id}: Push failed - {error_code}: {error_msg}")
+                                        
+                                        if error_code == 'DeviceNotRegistered':
+                                            logger.info(f"🗑️ Removing invalid push token for user {user_id}")
+                                            self.db.users_collection.update_one(
+                                                {'user_id': user_id},
+                                                {'$unset': {'push_token': ""}}
+                                            )
+                            else:
+                                error_text = await response.text()
+                                logger.error(f"❌ Expo API HTTP {response.status}: {error_text[:200]}")
+                                total_failed += len(chunk)
+                                
+                    except asyncio.TimeoutError:
+                        logger.error(f"⏱️ Timeout sending batch {i//chunk_size + 1}")
+                        total_failed += len(chunk)
+                    except Exception as e:
+                        logger.error(f"💥 Error sending batch {i//chunk_size + 1}: {e}")
+                        total_failed += len(chunk)
 
-            logger.info(f"🎯 FINAL RESULT: ✅ {total_sent} sent, ❌ {total_failed} failed")
+                logger.info(f"🎯 FINAL RESULT: ✅ {total_sent} sent, ❌ {total_failed} failed")
 
-    except Exception as e:
-        logger.error(f"💥 CRITICAL ERROR in send_push_to_users: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+        except Exception as e:
+            logger.error(f"💥 CRITICAL ERROR in send_push_to_users: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
         
 
   
