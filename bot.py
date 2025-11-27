@@ -641,6 +641,34 @@ class NotificationManager:
         
         return prefs
 
+    def get_eligible_users(self, user_ids: set, notification_type: str) -> set:
+        """
+        Fetch users who have opted IN for a specific notification_type in ONE query.
+        Solves the N+1 query disaster.
+        """
+        if not user_ids:
+            return set()
+            
+        user_ids_list = list(user_ids)
+        eligible_users = set()
+        
+        CHUNK_SIZE = 10000
+        
+        for i in range(0, len(user_ids_list), CHUNK_SIZE):
+            chunk = user_ids_list[i:i + CHUNK_SIZE]
+            
+            query = {
+                'user_id': {'$in': chunk},
+                f'notifications.{notification_type}': {'$ne': False}
+            }
+            
+            cursor = self.db.users_collection.find(query, {'user_id': 1})
+            
+            for user in cursor:
+                eligible_users.add(user['user_id'])
+                
+        return eligible_users
+
     def should_notify(self, user_id: int, notification_type: str) -> bool:
         """Check if user wants this notification"""
         if notification_type not in self.DEFAULT_PREFS:
@@ -649,6 +677,10 @@ class NotificationManager:
 
         prefs = self.get_notification_preferences(user_id)
         return prefs.get(notification_type, True)
+
+ 
+
+
         
 class MongoDBHandler:
     """Handle all MongoDB operations"""
@@ -701,6 +733,8 @@ class MongoDBHandler:
             self.vip_requests_collection.create_index([('user_id', 1), ('status', 1)])
             self.notifications_collection = self.db['user_notifications']
             self.notifications_collection.create_index([('user_id', 1), ('timestamp', -1)])
+            self.notifications_collection.create_index("timestamp", expireAfterSeconds=2592000) 
+            self.notifications_collection.create_index([('user_id', 1), ('timestamp', -1)])
 
             logger.info("Successfully connected to MongoDB")
         except (ConnectionFailure, ServerSelectionTimeoutError) as e:
@@ -751,6 +785,17 @@ class MongoDBHandler:
         except Exception as e:
             logger.error(f"Error subscribing user {user_id}: {e}")
             return False
+
+    def save_notifications_bulk(self, notifications: List[Dict]):
+        """
+        Efficiently save multiple notifications at once.
+        Replaces loop-based synchronous writes.
+        """
+        try:
+            if notifications:
+                self.notifications_collection.insert_many(notifications, ordered=False)
+        except Exception as e:
+            logger.error(f"Error bulk saving notifications: {e}")
 
     def remove_subscriber(self, user_id: int):
         """Remove a subscriber"""
@@ -2164,6 +2209,10 @@ class TwitterIntegration:
             self.api = None
             logger.warning("Twitter credentials not set")
 
+    def _clean_html(self, text: str) -> str:
+        """Helper: Remove HTML tags for Twitter"""
+        return re.sub(r'<[^>]+>', '', text)
+
     def _split_text(self, text: str) -> List[str]:
         """
         Smartly split text into chunks for Twitter threading.
@@ -2308,6 +2357,7 @@ class TwitterIntegration:
             rating = suggestion.get('rating', 0)
             
             content = message_data.get('content') if message_data['type'] == 'text' else message_data.get('caption', "")
+            clean_content = self._clean_html(content)
             stars = "⭐" * rating if rating else ""
             
             full_text = f"💡 Trading Signal {stars}\n\n{content}\n\n👤 Signal by: {suggester}"
@@ -3807,8 +3857,11 @@ class BroadcastBot:
         return ConversationHandler.END
 
     async def broadcast_signal(self, context: ContextTypes.DEFAULT_TYPE, suggestion: Dict):
-        """Broadcast approved signal to all users"""
-        target_users = self.db.get_all_users()
+        """Broadcast approved signal to all users (Optimized for Performance)"""
+        all_users = self.db.get_all_users()
+        
+        target_users = self.notification_manager.get_eligible_users(all_users, 'signals')
+        
         message_data = suggestion['message_data']
         suggester = suggestion['suggester_name']
         rating = suggestion.get('rating')
@@ -3819,20 +3872,18 @@ class BroadcastBot:
 
         attribution += "\n\n🔕 Disable: /settings then toggle off Signal Suggestions"
 
-
         success_count = 0
         failed_count = 0
 
         for user_id in target_users:
-            if not self.notification_manager.should_notify(user_id, 'signals'):
-                failed_count += 1
-                continue
             try:
                 if message_data['type'] == 'text':
                     full_text = message_data['content'] + attribution
                     await context.bot.send_message(
                         chat_id=user_id,
                         text=full_text
+                        parse_mode=ParseMode.HTML,
+                        disable_web_page_preview=True
                     )
                 elif message_data['type'] == 'photo':
                     caption = (message_data.get('caption') or '') + attribution
@@ -3840,6 +3891,7 @@ class BroadcastBot:
                         chat_id=user_id,
                         photo=message_data['file_id'],
                         caption=caption
+                        parse_mode=ParseMode.HTML
                     )
                 elif message_data['type'] == 'video':
                     caption = (message_data.get('caption') or '') + attribution
@@ -3847,6 +3899,7 @@ class BroadcastBot:
                         chat_id=user_id,
                         video=message_data['file_id'],
                         caption=caption
+                        parse_mode=ParseMode.HTML
                     )
                 elif message_data['type'] == 'document':
                     caption = (message_data.get('caption') or '') + attribution
@@ -3854,15 +3907,20 @@ class BroadcastBot:
                         chat_id=user_id,
                         document=message_data['file_id'],
                         caption=caption
+                        parse_mode=ParseMode.HTML
                     )
 
                 success_count += 1
-                await asyncio.sleep(0.05)
+                
+                await asyncio.sleep(0.05) 
+                
             except Exception as e:
-                logger.error(f"Failed to send signal to {user_id}: {e}")
+                if "chat not found" not in str(e).lower() and "bot was blocked" not in str(e).lower():
+                    logger.error(f"Failed to send signal to {user_id}: {e}")
                 failed_count += 1
 
         logger.info(f"Signal broadcast completed: {success_count} success, {failed_count} failed")
+        
         tweet_url = await self.twitter.post_signal(context, suggestion)
         if tweet_url:
             try:
@@ -5206,72 +5264,71 @@ class BroadcastBot:
                  await update.message.reply_text("✅ Content saved to educational database!")
 
     async def send_push_to_users(self, user_ids: list, title: str, body: str, data: dict = None):
-        """Send Expo Push Notifications with comprehensive logging"""
+        """Send Expo Push Notifications with Bulk Writes and Batching"""
         if not user_ids:
-            logger.warning("send_push_to_users called with empty user_ids list")
             return
 
         logger.info(f"🔔 Attempting to send push to {len(user_ids)} users")
-    
+        
+        all_expo_messages = []
+        all_history_logs = []
+        user_ids_list = list(user_ids)
+        
+        CHUNK_SIZE = 2000 
+        
         try:
-            users = list(self.db.users_collection.find(
-                {'user_id': {'$in': list(user_ids)}, 'push_token': {'$exists': True, '$ne': None}}
-            ))
-        
-            logger.info(f"📱 Found {len(users)} users with push tokens in database")
-        
-            notifications = []
-            token_map = {}
-            skipped_users = []
-
-            for user in users:
-                user_id = user.get('user_id')
-                token = user.get('push_token')
-            
-                self.db.save_notification(user_id, title, body, data)
-            
-                if not token:
-                    skipped_users.append((user_id, "No token"))
-                    logger.debug(f"User {user_id}: No push token found")
-                    continue
+            for i in range(0, len(user_ids_list), CHUNK_SIZE):
+                chunk = user_ids_list[i:i + CHUNK_SIZE]
                 
-                token_str = str(token).strip()
-                if not token_str.startswith('ExponentPushToken[') and not token_str.startswith('ExponentPushToken'):
-                    skipped_users.append((user_id, f"Invalid token format: {token_str[:20]}..."))
-                    logger.warning(f"User {user_id}: Invalid token format: {token_str[:30]}")
-                    continue
-            
-                note = {
-                    'to': token_str,
-                    'title': title,
-                    'body': body,
-                    'sound': 'default',
-                    'priority': 'high',
-                    'channelId': 'default',
-                }
-                if data:
-                    note['data'] = data
-            
-                notifications.append(note)
-                token_map[len(notifications) - 1] = user_id
+                users = list(self.db.users_collection.find(
+                    {'user_id': {'$in': chunk}, 'push_token': {'$exists': True, '$ne': None}}
+                ))
+                
+                current_time = time.time()
+                
+                for user in users:
+                    user_id = user.get('user_id')
+                    token = user.get('push_token')
+                    token_str = str(token).strip()
 
-            logger.info(f"✅ Valid tokens: {len(notifications)}, ❌ Skipped: {len(skipped_users)}")
-        
-            if skipped_users:
-                logger.info(f"Skipped users: {skipped_users[:5]}")  # Log first 5
-        
-            if not notifications:
-                logger.warning("⚠️ No valid push tokens found - no notifications sent")
+                    all_history_logs.append({
+                        'user_id': user_id,
+                        'title': title,
+                        'body': body,
+                        'data': data or {},
+                        'read': False,
+                        'timestamp': current_time
+                    })
+
+                    if not token_str.startswith('ExponentPushToken'):
+                        continue
+
+                    note = {
+                        'to': token_str,
+                        'title': title,
+                        'body': body,
+                        'sound': 'default',
+                        'priority': 'high',
+                        'channelId': 'default',
+                    }
+                    if data:
+                        note['data'] = data
+                    all_expo_messages.append(note)
+
+            if all_history_logs:
+                
+                for i in range(0, len(all_history_logs), CHUNK_SIZE):
+                    self.db.save_notifications_bulk(all_history_logs[i:i+CHUNK_SIZE])
+
+            if not all_expo_messages:
                 return
                 
             async with aiohttp.ClientSession() as session:
-                chunk_size = 100
+                EXPO_CHUNK_SIZE = 100
                 total_sent = 0
-                total_failed = 0
                 
-                for i in range(0, len(notifications), chunk_size):
-                    chunk = notifications[i:i + chunk_size]
-                    
+                for i in range(0, len(all_expo_messages), EXPO_CHUNK_SIZE):
+                    chunk = all_expo_messages[i:i + EXPO_CHUNK_SIZE]
                     try:
                         async with session.post(
                             'https://exp.host/--/api/v2/push/send',
@@ -5283,53 +5340,15 @@ class BroadcastBot:
                             },
                             timeout=aiohttp.ClientTimeout(total=10)
                         ) as response:
-                            
                             if response.status == 200:
-                                result = await response.json()
-                                data_array = result.get('data', [])
-                                
-                                logger.info(f"📤 Batch {i//chunk_size + 1}: Sent {len(chunk)} notifications")
-                                
-                                for idx, ticket in enumerate(data_array):
-                                    original_index = i + idx
-                                    user_id = token_map.get(original_index)
-                                    
-                                    if ticket.get('status') == 'ok':
-                                        total_sent += 1
-                                        logger.debug(f"✅ User {user_id}: Push sent successfully")
-                                        
-                                    elif ticket.get('status') == 'error':
-                                        total_failed += 1
-                                        details = ticket.get('details', {})
-                                        error_code = details.get('error')
-                                        error_msg = ticket.get('message', 'Unknown error')
-                                        
-                                        logger.warning(f"❌ User {user_id}: Push failed - {error_code}: {error_msg}")
-                                        
-                                        if error_code == 'DeviceNotRegistered':
-                                            logger.info(f"🗑️ Removing invalid push token for user {user_id}")
-                                            self.db.users_collection.update_one(
-                                                {'user_id': user_id},
-                                                {'$unset': {'push_token': ""}}
-                                            )
-                            else:
-                                error_text = await response.text()
-                                logger.error(f"❌ Expo API HTTP {response.status}: {error_text[:200]}")
-                                total_failed += len(chunk)
-                                
-                    except asyncio.TimeoutError:
-                        logger.error(f"⏱️ Timeout sending batch {i//chunk_size + 1}")
-                        total_failed += len(chunk)
+                                total_sent += len(chunk)
                     except Exception as e:
-                        logger.error(f"💥 Error sending batch {i//chunk_size + 1}: {e}")
-                        total_failed += len(chunk)
+                        logger.error(f"Error sending batch {i}: {e}")
 
-                logger.info(f"🎯 FINAL RESULT: ✅ {total_sent} sent, ❌ {total_failed} failed")
+            logger.info(f"✅ Push batch completed: {total_sent} messages sent")
 
         except Exception as e:
             logger.error(f"💥 CRITICAL ERROR in send_push_to_users: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
         
 
   
@@ -5977,6 +5996,7 @@ class BroadcastBot:
 
         async def api_submit_signal(request):
             """API Endpoint: Submit Signal from App (Supports Text & Images)"""
+            import html
             try:
                 user_id = None
                 content = None
@@ -6008,9 +6028,11 @@ class BroadcastBot:
                     return web.json_response({'error': 'Missing user_id or content'}, status=400)
 
                 cleaned_content = self.clean_empty_signal_fields(content)
+                safe_content = html.escape(cleaned_content)
+                final_content = safe_content + "\n\n<i>📲 via PipSage App</i>"
                 
                 message_data = {
-                    'content': cleaned_content + "\n\n<i>📲 via PipSage Mobile</i>"
+                    'content': final_content
                 }
 
                 if image_data:
