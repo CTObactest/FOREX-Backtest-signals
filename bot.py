@@ -1241,16 +1241,28 @@ class MongoDBHandler:
             return False
             
     def update_user_push_token(self, user_id: int, token: str):
-        """Update user's Expo push token"""
+        """Update user's Expo push token with logging"""
         try:
-            self.users_collection.update_one(
+            result = self.users_collection.update_one(
                 {'user_id': user_id},
-                {'$set': {'push_token': token}},
+                {
+                    '$set': {
+                        'push_token': token,
+                        'push_token_updated_at': time.time()
+                    }
+                },
                 upsert=True
             )
-            return True
+        
+            if result.modified_count > 0 or result.upserted_id:
+                logger.info(f"✅ Updated push token for user {user_id}")
+                return True
+            else:
+                logger.warning(f"⚠️ Push token update had no effect for user {user_id}")
+                return False
+            
         except Exception as e:
-            logger.error(f"Error updating push token for {user_id}: {e}")
+            logger.error(f"❌ Error updating push token for {user_id}: {e}")
             return False
 
     def get_suggester_stats(self, time_frame: str) -> List[Dict]:
@@ -5194,28 +5206,43 @@ class BroadcastBot:
                  await update.message.reply_text("✅ Content saved to educational database!")
 
     async def send_push_to_users(self, user_ids: list, title: str, body: str, data: dict = None):
-        """Send Expo Push Notifications, Save to History, and Handle Errors"""
+        """Send Expo Push Notifications with comprehensive logging"""
         if not user_ids:
+            logger.warning("send_push_to_users called with empty user_ids list")
             return
 
+        logger.info(f"🔔 Attempting to send push to {len(user_ids)} users")
+    
         try:
-            users = self.db.users_collection.find(
-                {'user_id': {'$in': list(user_ids)}, 'push_token': {'$exists': True}}
-            )
-            
+            users = list(self.db.users_collection.find(
+                {'user_id': {'$in': list(user_ids)}, 'push_token': {'$exists': True, '$ne': None}}
+            ))
+        
+            logger.info(f"📱 Found {len(users)} users with push tokens in database")
+        
             notifications = []
-            token_map = {} 
+            token_map = {}
+            skipped_users = []
 
             for user in users:
                 user_id = user.get('user_id')
                 token = user.get('push_token')
+            
                 self.db.save_notification(user_id, title, body, data)
-
-                if not token or not str(token).startswith('ExponentPushToken'):
+            
+                if not token:
+                    skipped_users.append((user_id, "No token"))
+                    logger.debug(f"User {user_id}: No push token found")
                     continue
                 
+                token_str = str(token).strip()
+                if not token_str.startswith('ExponentPushToken[') and not token_str.startswith('ExponentPushToken'):
+                    skipped_users.append((user_id, f"Invalid token format: {token_str[:20]}..."))
+                    logger.warning(f"User {user_id}: Invalid token format: {token_str[:30]}")
+                    continue
+            
                 note = {
-                    'to': token,
+                    'to': token_str,
                     'title': title,
                     'body': body,
                     'sound': 'default',
@@ -5224,53 +5251,87 @@ class BroadcastBot:
                 }
                 if data:
                     note['data'] = data
-                
+            
                 notifications.append(note)
                 token_map[len(notifications) - 1] = user_id
 
+            logger.info(f"✅ Valid tokens: {len(notifications)}, ❌ Skipped: {len(skipped_users)}")
+        
+            if skipped_users:
+                logger.info(f"Skipped users: {skipped_users[:5]}")  # Log first 5
+        
             if not notifications:
+                logger.warning("⚠️ No valid push tokens found - no notifications sent")
                 return
-                
-            async with aiohttp.ClientSession() as session:
-                chunk_size = 100
-                for i in range(0, len(notifications), chunk_size):
-                    chunk = notifications[i:i + chunk_size]
-                    try:
-                        async with session.post(
-                            'https://exp.host/--/api/v2/push/send',
-                            json=chunk,
-                            headers={
-                                'Accept': 'application/json',
-                                'Accept-Encoding': 'gzip, deflate',
-                                'Content-Type': 'application/json'
-                            }
-                        ) as response:
-                            if response.status == 200:
-                                result = await response.json()
-                                data_array = result.get('data', [])
-                
-                                for idx, ticket in enumerate(data_array):
-                                    if ticket.get('status') == 'error':
-                                        details = ticket.get('details', {})
-                                        error_code = details.get('error')
-                                        
-                                        original_index = i + idx
-                                        failed_user_id = token_map.get(original_index)
 
-                                        if error_code == 'DeviceNotRegistered' and failed_user_id:
-                                            logger.info(f"Removing invalid push token for user {failed_user_id}")
-                                            self.db.users_collection.update_one(
-                                                {'user_id': failed_user_id},
-                                                {'$unset': {'push_token': ""}}
-                                            )
-                            else:
-                                logger.error(f"Push notification HTTP error: {response.status} - {await response.text()}")
+    async with aiohttp.ClientSession() as session:
+            chunk_size = 100
+            total_sent = 0
+            total_failed = 0
+            
+            for i in range(0, len(notifications), chunk_size):
+                chunk = notifications[i:i + chunk_size]
+                
+                try:
+                    async with session.post(
+                        'https://exp.host/--/api/v2/push/send',
+                        json=chunk,
+                        headers={
+                            'Accept': 'application/json',
+                            'Accept-Encoding': 'gzip, deflate',
+                            'Content-Type': 'application/json'
+                        },
+                        timeout=aiohttp.ClientTimeout(total=10)
+                    ) as response:
+                        
+                        if response.status == 200:
+                            result = await response.json()
+                            data_array = result.get('data', [])
+                            
+                            logger.info(f"📤 Batch {i//chunk_size + 1}: Sent {len(chunk)} notifications")
+                            
+                            for idx, ticket in enumerate(data_array):
+                                original_index = i + idx
+                                user_id = token_map.get(original_index)
                                 
-                    except Exception as e:
-                        logger.error(f"Error sending push batch: {e}")
+                                if ticket.get('status') == 'ok':
+                                    total_sent += 1
+                                    logger.debug(f"✅ User {user_id}: Push sent successfully")
+                                    
+                                elif ticket.get('status') == 'error':
+                                    total_failed += 1
+                                    details = ticket.get('details', {})
+                                    error_code = details.get('error')
+                                    error_msg = ticket.get('message', 'Unknown error')
+                                    
+                                    logger.warning(f"❌ User {user_id}: Push failed - {error_code}: {error_msg}")
+                                    
+                                    # REMOVE INVALID TOKENS
+                                    if error_code == 'DeviceNotRegistered':
+                                        logger.info(f"🗑️ Removing invalid push token for user {user_id}")
+                                        self.db.users_collection.update_one(
+                                            {'user_id': user_id},
+                                            {'$unset': {'push_token': ""}}
+                                        )
+                        else:
+                            error_text = await response.text()
+                            logger.error(f"❌ Expo API HTTP {response.status}: {error_text[:200]}")
+                            total_failed += len(chunk)
+                            
+                except asyncio.TimeoutError:
+                    logger.error(f"⏱️ Timeout sending batch {i//chunk_size + 1}")
+                    total_failed += len(chunk)
+                except Exception as e:
+                    logger.error(f"💥 Error sending batch {i//chunk_size + 1}: {e}")
+                    total_failed += len(chunk)
 
-        except Exception as e:
-            logger.error(f"Push notification critical error: {e}")
+            logger.info(f"🎯 FINAL RESULT: ✅ {total_sent} sent, ❌ {total_failed} failed")
+
+    except Exception as e:
+        logger.error(f"💥 CRITICAL ERROR in send_push_to_users: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        
 
   
 
@@ -5357,50 +5418,42 @@ class BroadcastBot:
                 return web.json_response({'error': str(e)}, status=500)
         
         async def api_update_push_token(request):
-            """API Endpoint: Update User Push Token"""
+            """API Endpoint: Update User Push Token with validation"""
             try:
                 data = await request.json()
                 user_id = data.get('user_id')
                 token = data.get('token')
 
                 if not user_id or not token:
+                    logger.warning(f"Missing data in push token update: user_id={user_id}, token={'present' if token else 'missing'}")
                     return web.json_response({'error': 'Missing user_id or token'}, status=400)
 
-                try: user_id = int(user_id)
-                except: return web.json_response({'error': 'Invalid user_id'}, status=400)
-
-                if self.db.update_user_push_token(user_id, token):
-                    return web.json_response({'success': True})
-                else:
-                    return web.json_response({'error': 'Database error'}, status=500)
-            except Exception as e:
-                return web.json_response({'error': str(e)}, status=500)
-
-        async def api_get_notifications(request):
-            """API Endpoint: Get User Notification History"""
-            try:
-                user_id = request.match_info['user_id']
-                try: 
+                 try: 
                     user_id = int(user_id)
                 except: 
-                    return web.json_response({'error': 'Invalid ID'}, status=400)
+                    logger.warning(f"Invalid user_id format: {user_id}")
+                    return web.json_response({'error': 'Invalid user_id'}, status=400)
 
-                notifications = self.db.get_user_notifications(user_id)
-                
-                results = []
-                for n in notifications:
-                    ts = n.get('timestamp', 0)
-                    results.append({
-                        'title': n.get('title'),
-                        'body': n.get('body'),
-                        'time': datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M'),
-                        'read': n.get('read', False),
-                        'data': n.get('data', {})
-                    })
+                token_str = str(token).strip()
+                if not (token_str.startswith('ExponentPushToken[') or token_str.startswith('ExponentPushToken')):
+                    logger.warning(f"Invalid Expo token format for user {user_id}: {token_str[:30]}")
+                    return web.json_response({'error': 'Invalid Expo token format'}, status=400)
 
-                return web.json_response(results)
+                user = self.db.users_collection.find_one({'user_id': user_id})
+                if not user:
+                    logger.warning(f"Attempted to register push token for non-existent user {user_id}")
+                    self.db.add_user(user_id)  # Create user if needed
+                    logger.info(f"Created new user {user_id} during push token registration")
+
+                if self.db.update_user_push_token(user_id, token_str):
+                    logger.info(f"✅ Successfully registered push token for user {user_id}")
+                    return web.json_response({'success': True})
+                else:
+                    logger.error(f"❌ Database error registering token for user {user_id}")
+                    return web.json_response({'error': 'Database error'}, status=500)
+            
             except Exception as e:
-                logger.error(f"API Notifications Error: {e}")
+                logger.error(f"Error in api_update_push_token: {e}")
                 return web.json_response({'error': str(e)}, status=500)
                 
         async def api_get_stats(request):
@@ -5493,6 +5546,50 @@ class BroadcastBot:
                 print(f"🔥 CRITICAL API ERROR: {str(e)}")
             
                 return web.json_response({'error': 'Internal Server Error', 'details': str(e)}, status=500)
+
+        async def api_check_push_status(request):
+            """API Endpoint: Check if user has valid push token registered"""
+            try:
+                user_id = request.match_info['user_id']
+                try: 
+                    user_id = int(user_id)
+                except: 
+                    return web.json_response({'error': 'Invalid ID'}, status=400)
+
+                user = self.db.users_collection.find_one({'user_id': user_id})
+        
+                if not user:
+                    return web.json_response({
+                        'user_exists': False,
+                        'has_token': False,
+                        'message': 'User not found'
+                    })
+
+                token = user.get('push_token')
+                token_updated = user.get('push_token_updated_at')
+        
+                if token:
+                    token_str = str(token).strip()
+                    is_valid = token_str.startswith('ExponentPushToken')
+            
+                    return web.json_response({
+                        'user_exists': True,
+                        'has_token': True,
+                        'token_valid': is_valid,
+                        'token_preview': token_str[:30] + '...' if len(token_str) > 30 else token_str,
+                        'token_updated_at': token_updated,
+                        'message': 'Token registered' if is_valid else 'Invalid token format'
+                    })
+                else:
+                    return web.json_response({
+                        'user_exists': True,
+                        'has_token': False,
+                        'message': 'No push token registered'
+                    })
+
+            except Exception as e:
+                logger.error(f"Error checking push status: {e}")
+                return web.json_response({'error': str(e)}, status=500)
 
         async def api_delete_account_page(request):
             """Web Page for Play Store Data Deletion Requirement"""
