@@ -6094,7 +6094,7 @@ class BroadcastBot:
 
         async def api_get_broadcasts(request):
             """
-            API Endpoint: Get Unified Feed with Reactions.
+            API Endpoint: Get Unified Feed with Batch Optimized Reactions.
             """
             try:
                 results = []
@@ -6125,120 +6125,119 @@ class BroadcastBot:
                             image_url = f"/api/media/{file_id}"
                     return content, image_url
 
-                def get_reaction_stats(item_id):
-                    str_id = str(item_id)
-                    count = self.db.db['reactions'].count_documents({'broadcast_id': str_id})
-                    is_liked = False
-                    if requesting_user_id:
-                        is_liked = self.db.db['reactions'].find_one({
-                            'broadcast_id': str_id, 
-                            'user_id': requesting_user_id
-                        }) is not None
-                    return count, is_liked
+                raw_items = []
 
                 if is_vip_request:
-                    broadcasts_cursor = self.db.broadcast_approvals_collection.find(
+                    cursor = self.db.broadcast_approvals_collection.find(
                         {'status': 'approved', 'target': 'subscribers'}
                     ).sort('reviewed_at', -1).limit(20)
+                    for doc in cursor:
+                        raw_items.append({'doc': doc, 'type': 'broadcast', 'is_vip': True})
+                else:
+                    sig_cursor = self.db.signal_suggestions_collection.find(
+                        {'status': 'approved'}
+                    ).sort('reviewed_at', -1).limit(15)
+                    for doc in sig_cursor:
+                        raw_items.append({'doc': doc, 'type': 'signal'})
 
-                    for bc in broadcasts_cursor:
-                        msg_data = bc.get('message_data', {})
-                        content, image_url = extract_data(msg_data)
-                        if not content.startswith("🔒"): content = f"🔒 <b>VIP Update</b>\n\n{content}"
+                    bc_cursor = self.db.broadcast_approvals_collection.find(
+                        {'status': 'approved', 'target': {'$in': ['all', 'nonsubscribers']}}
+                    ).sort('reviewed_at', -1).limit(10)
+                    for doc in bc_cursor:
+                        raw_items.append({'doc': doc, 'type': 'broadcast'})
+
+                    if hasattr(self, 'edu_content_manager') and self.edu_content_manager:
+                        edu_cursor = self.edu_content_manager.educational_content_collection.find(
+                            {'type': {'$in': ['text', 'photo']}} 
+                        ).sort('saved_at', -1).limit(5)
+                        for doc in edu_cursor:
+                            raw_items.append({'doc': doc, 'type': 'education'})
+
+                all_ids = []
+                for item in raw_items:
+                    if item['type'] == 'education':
+                        item_id = f"edu_{item['doc'].get('message_id')}"
+                        item['doc']['_temp_id'] = item_id
+                    else:
+                        item_id = str(item['doc']['_id'])
+                        item['doc']['_temp_id'] = item_id
+                    all_ids.append(item_id)
+
+                reaction_counts = {}
+                user_liked_ids = set()
+
+                if all_ids:
+                    pipeline = [
+                        {'$match': {'broadcast_id': {'$in': all_ids}}},
+                        {'$group': {'_id': '$broadcast_id', 'count': {'$sum': 1}}}
+                    ]
+                    agg_results = list(self.db.db['reactions'].aggregate(pipeline))
+                    for res in agg_results:
+                        reaction_counts[res['_id']] = res['count']
+
+                    if requesting_user_id:
+                        user_likes = list(self.db.db['reactions'].find(
+                            {'user_id': requesting_user_id, 'broadcast_id': {'$in': all_ids}},
+                            {'broadcast_id': 1}
+                        ))
+                        user_liked_ids = {r['broadcast_id'] for r in user_likes}
+
+                for item in raw_items:
+                    doc = item['doc']
+                    item_id = doc.get('_temp_id')
+                    
+                    likes = reaction_counts.get(item_id, 0)
+                    is_liked = item_id in user_liked_ids
+
+                    if item['type'] == 'education':
+                        content = doc.get('content') if doc['type'] == 'text' else doc.get('caption', '')
+                        image_url = None
+                        if doc['type'] == 'photo' and doc.get('file_id'):
+                            image_url = f"/api/media/{doc['file_id']}"
                         
-                        likes, is_liked = get_reaction_stats(bc['_id'])
-
                         results.append({
-                            'id': str(bc['_id']),
-                            'type': 'broadcast',
-                            'content': content,
+                            'id': item_id,
+                            'type': 'education',
+                            'content': f"📚 <b>Daily Tip</b>\n\n{content}",
                             'rating': 0,
-                            'timestamp_raw': bc.get('reviewed_at', 0),
-                            'timestamp': format_time_ago(bc.get('reviewed_at', 0)),
-                            'author': 'PipSage VIP', 
+                            'timestamp_raw': doc.get('saved_at', 0),
+                            'timestamp': format_time_ago(doc.get('saved_at', 0)),
+                            'author': 'PipSage Education',
                             'image': image_url,
                             'likesCount': likes,
                             'isLiked': is_liked
                         })
-                    return web.json_response(results)
-
-                signals_cursor = self.db.signal_suggestions_collection.find(
-                    {'status': 'approved'}
-                ).sort('reviewed_at', -1).limit(15)
-
-                for sig in signals_cursor:
-                    msg_data = sig.get('message_data', {})
-                    content, image_url = extract_data(msg_data)
-                    likes, is_liked = get_reaction_stats(sig['_id'])
+                    else:
+                        msg_data = doc.get('message_data', {})
+                        content, image_url = extract_data(msg_data)
                     
-                    results.append({
-                        'id': str(sig['_id']),
-                        'type': 'signal',
-                        'content': content,
-                        'rating': sig.get('rating', 0),
-                        'timestamp_raw': sig.get('reviewed_at', 0),
-                        'timestamp': format_time_ago(sig.get('reviewed_at', 0)),
-                        'author': sig.get('suggester_name', 'Unknown Trader'),
-                        'image': image_url,
-                        'likesCount': likes,
-                        'isLiked': is_liked
-                    })
+                        if item.get('is_vip') and not content.startswith("🔒"):
+                            content = f"🔒 <b>VIP Update</b>\n\n{content}"
+                        elif item['type'] == 'broadcast' and not content.startswith("📢") and not item.get('is_vip'):
+                            target = doc.get('target', 'Announcement').replace('_', ' ').title()
+                            content = f"📢 {target}\n\n{content}"
 
-                broadcasts_cursor = self.db.broadcast_approvals_collection.find(
-                    {'status': 'approved', 'target': {'$in': ['all', 'nonsubscribers']}}
-                ).sort('reviewed_at', -1).limit(10)
-
-                for bc in broadcasts_cursor:
-                    msg_data = bc.get('message_data', {})
-                    content, image_url = extract_data(msg_data)
-                    if not content.startswith("📢"):
-                        target = bc.get('target', 'Announcement').replace('_', ' ').title()
-                        content = f"📢 {target}\n\n{content}"
-                    
-                    likes, is_liked = get_reaction_stats(bc['_id'])
-
-                    results.append({
-                        'id': str(bc['_id']),
-                        'type': 'broadcast',
-                        'content': content,
-                        'rating': 0,
-                        'timestamp_raw': bc.get('reviewed_at', 0),
-                        'timestamp': format_time_ago(bc.get('reviewed_at', 0)),
-                        'author': 'PipSage Team', 
-                        'image': image_url,
-                        'likesCount': likes,
-                        'isLiked': is_liked
-                    })
-
-                if hasattr(self, 'edu_content_manager') and self.edu_content_manager:
-                    edu_cursor = self.edu_content_manager.educational_content_collection.find(
-                        {'type': {'$in': ['text', 'photo']}} 
-                    ).sort('saved_at', -1).limit(5)
-
-                    for edu in edu_cursor:
-                        content = edu.get('content') if edu['type'] == 'text' else edu.get('caption', '')
-                        image_url = None
-                        if edu['type'] == 'photo' and edu.get('file_id'):
-                            image_url = f"/api/media/{edu['file_id']}"
-                        
-                        edu_id = f"edu_{edu.get('message_id')}"
-                        likes, is_liked = get_reaction_stats(edu_id)
+                        author = 'PipSage Team'
+                        if item['type'] == 'signal':
+                            author = doc.get('suggester_name', 'Unknown Trader')
+                        elif item.get('is_vip'):
+                            author = 'PipSage VIP'
 
                         results.append({
-                            'id': edu_id,
-                            'type': 'education',
-                            'content': f"📚 <b>Daily Tip</b>\n\n{content}",
-                            'rating': 0,
-                            'timestamp_raw': edu.get('saved_at', 0),
-                            'timestamp': format_time_ago(edu.get('saved_at', 0)),
-                            'author': 'PipSage Education',
+                            'id': item_id,
+                            'type': item['type'],
+                            'content': content,
+                            'rating': doc.get('rating', 0),
+                            'timestamp_raw': doc.get('reviewed_at', 0),
+                            'timestamp': format_time_ago(doc.get('reviewed_at', 0)),
+                            'author': author, 
                             'image': image_url,
                             'likesCount': likes,
                             'isLiked': is_liked
                         })
 
                 stats = self.db.get_suggester_stats('weekly')
-                if stats:
+                if stats and not is_vip_request:
                     lb_text = "🏆 <b>Top Traders (This Week)</b>\n\n"
                     medals = ["🥇", "🥈", "🥉"]
                     for i, stat in enumerate(stats[:3]):
