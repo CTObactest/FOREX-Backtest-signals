@@ -3881,7 +3881,7 @@ class BroadcastBot:
                     full_text = message_data['content'] + attribution
                     await context.bot.send_message(
                         chat_id=user_id,
-                        text=full_text
+                        text=full_text,
                         parse_mode=ParseMode.HTML,
                         disable_web_page_preview=True
                     )
@@ -3890,7 +3890,7 @@ class BroadcastBot:
                     await context.bot.send_photo(
                         chat_id=user_id,
                         photo=message_data['file_id'],
-                        caption=caption
+                        caption=caption,
                         parse_mode=ParseMode.HTML
                     )
                 elif message_data['type'] == 'video':
@@ -3898,7 +3898,7 @@ class BroadcastBot:
                     await context.bot.send_video(
                         chat_id=user_id,
                         video=message_data['file_id'],
-                        caption=caption
+                        caption=caption,
                         parse_mode=ParseMode.HTML
                     )
                 elif message_data['type'] == 'document':
@@ -3906,7 +3906,7 @@ class BroadcastBot:
                     await context.bot.send_document(
                         chat_id=user_id,
                         document=message_data['file_id'],
-                        caption=caption
+                        caption=caption,
                         parse_mode=ParseMode.HTML
                     )
 
