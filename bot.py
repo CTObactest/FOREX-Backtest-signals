@@ -6403,6 +6403,22 @@ class BroadcastBot:
              except Exception as e:
                  return web.json_response({'error': str(e)}, status=500)
 
+        async def api_get_notifications(request):
+            """API Endpoint: Get User Notifications"""
+            try:
+                user_id = request.match_info['user_id']
+                try: 
+                    user_id = int(user_id)
+                except (ValueError, TypeError): 
+                    return web.json_response({'error': 'Invalid User ID'}, status=400)
+
+                notifications = self.db.get_user_notifications(user_id, limit=50)
+                
+                return web.json_response(notifications)
+            except Exception as e:
+                logger.error(f"API Notifications Error: {e}")
+                return web.json_response({'error': str(e)}, status=500)
+
         async def api_toggle_reaction(request):
             """API Endpoint: Toggle Like on a Broadcast/Signal"""
             try:
@@ -6461,6 +6477,7 @@ class BroadcastBot:
         app.router.add_post('/api/users/push_token', api_update_push_token)
         app.router.add_get('/api/users/{user_id}/notifications', api_get_notifications)
         app.router.add_post('/api/broadcasts/{id}/react', api_toggle_reaction)
+        app.router.add_get('/api/push/status/{user_id}', api_check_push_status)
         
         import aiohttp_cors
         cors = aiohttp_cors.setup(app, defaults={
