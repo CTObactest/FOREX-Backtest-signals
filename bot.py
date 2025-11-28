@@ -6028,8 +6028,7 @@ class BroadcastBot:
                     return web.json_response({'error': 'Missing user_id or content'}, status=400)
 
                 cleaned_content = self.clean_empty_signal_fields(content)
-                safe_content = html.escape(cleaned_content)
-                final_content = safe_content + "\n\n<i>📲 via PipSage App</i>"
+                final_content = cleaned_content + "\n\n<i>📲 via PipSage App</i>"
                 
                 message_data = {
                     'content': final_content
