@@ -6028,7 +6028,7 @@ class BroadcastBot:
                     return web.json_response({'error': 'Missing user_id or content'}, status=400)
 
                 cleaned_content = self.clean_empty_signal_fields(content)
-                final_content = cleaned_content + "\n\n<i>📲 via PipSage App</i>"
+                final_content = cleaned_content + "\n\n📲 via PipSage App"
                 
                 message_data = {
                     'content': final_content
@@ -6063,7 +6063,8 @@ class BroadcastBot:
 
                             message_data['type'] = 'photo'
                             message_data['file_id'] = file_id
-                            message_data['caption'] = cleaned_content + "\n\n<i>📲 via PipSage Mobile</i>"
+                            message_data['caption'] = cleaned_content + "\n\n📲 via PipSage App"
+                            
                             if 'content' in message_data: del message_data['content']
                         else:
                             raise Exception("Telegram did not return a photo object.")
