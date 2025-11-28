@@ -1,7 +1,6 @@
 import os
 import logging
 import asyncio
-from typing import Dict, List, Optional
 import aiohttp
 from aiohttp import web
 import threading
@@ -5439,40 +5438,48 @@ class BroadcastBot:
         async def api_update_push_token(request):
             """API Endpoint: Update User Push Token with validation"""
             try:
+                try:
+                    client_ip = request.remote
+                    logger.info(f"📥 Push Token Request received from IP: {client_ip}")
+                except:
+                    logger.info("📥 Push Token Request received (unknown IP)")
+
                 data = await request.json()
+                logger.info(f"📦 Token Payload: user_id={data.get('user_id')}, token_len={len(str(data.get('token', '')))}")
+
                 user_id = data.get('user_id')
                 token = data.get('token')
 
                 if not user_id or not token:
-                    logger.warning(f"Missing data in push token update: user_id={user_id}, token={'present' if token else 'missing'}")
+                    logger.warning(f"❌ Missing data in push token update: user_id={user_id}, token={'present' if token else 'missing'}")
                     return web.json_response({'error': 'Missing user_id or token'}, status=400)
 
                 try: 
                     user_id = int(user_id)
                 except: 
-                    logger.warning(f"Invalid user_id format: {user_id}")
+                    logger.warning(f"❌ Invalid user_id format: {user_id}")
                     return web.json_response({'error': 'Invalid user_id'}, status=400)
 
                 token_str = str(token).strip()
                 if not (token_str.startswith('ExponentPushToken[') or token_str.startswith('ExponentPushToken')):
-                    logger.warning(f"Invalid Expo token format for user {user_id}: {token_str[:30]}")
+                    logger.warning(f"❌ Invalid Expo token format for user {user_id}: {token_str[:30]}")
                     return web.json_response({'error': 'Invalid Expo token format'}, status=400)
 
                 user = self.db.users_collection.find_one({'user_id': user_id})
                 if not user:
-                    logger.warning(f"Attempted to register push token for non-existent user {user_id}")
-                    self.db.add_user(user_id)  # Create user if needed
-                    logger.info(f"Created new user {user_id} during push token registration")
+                    logger.warning(f"⚠️ Attempted to register push token for non-existent user {user_id}")
+                    self.db.add_user(user_id)
+                    logger.info(f"✅ Created new user {user_id} during push token registration")
 
                 if self.db.update_user_push_token(user_id, token_str):
                     logger.info(f"✅ Successfully registered push token for user {user_id}")
                     return web.json_response({'success': True})
                 else:
-                    logger.error(f"❌ Database error registering token for user {user_id}")
+                    logger.error(f"💥 Database error registering token for user {user_id}")
                     return web.json_response({'error': 'Database error'}, status=500)
             
             except Exception as e:
-                logger.error(f"Error in api_update_push_token: {e}")
+                logger.error(f"💥 CRITICAL API ERROR in api_update_push_token: {e}")
                 return web.json_response({'error': str(e)}, status=500)
                 
         async def api_get_stats(request):
