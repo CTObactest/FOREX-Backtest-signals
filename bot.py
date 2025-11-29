@@ -6633,6 +6633,37 @@ class BroadcastBot:
                         'type': 'like',
                         'timestamp': time.time()
                     })
+                    
+                    try:
+                        liker_doc = self.db.users_collection.find_one({'user_id': user_id})
+                        liker_name = liker_doc.get('first_name') or "Someone"
+                        
+                        author_id = None
+                        from bson.objectid import ObjectId
+                        
+                        if ObjectId.is_valid(broadcast_id):
+                            obj_id = ObjectId(broadcast_id)
+                            
+                            signal_doc = self.db.signal_suggestions_collection.find_one({'_id': obj_id})
+                            if signal_doc:
+                                author_id = signal_doc.get('suggested_by')
+                            else:
+                                broadcast_doc = self.db.broadcast_approvals_collection.find_one({'_id': obj_id})
+                                if broadcast_doc:
+                                    author_id = broadcast_doc.get('created_by')
+                        
+                        if author_id and author_id != user_id:
+                            logger.info(f"Sending reaction notification to author {author_id} from {liker_name}")
+                            asyncio.create_task(self.send_push_to_users(
+                                [author_id],
+                                "New Reaction ❤️",
+                                f"Your post liked by {liker_name}",
+                                data={'screen': 'Signals', 'initialTab': 'broadcasts'}
+                            ))
+                            
+                    except Exception as notify_e:
+                        logger.error(f"Failed to process reaction notification: {notify_e}")
+
                 new_count = self.db.db['reactions'].count_documents({'broadcast_id': broadcast_id})
                 return web.json_response({'success': True, 'action': action, 'count': new_count})
 
