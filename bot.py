@@ -768,6 +768,25 @@ class MongoDBHandler:
             logger.error(f"Error adding user {user_id}: {e}")
             return False
 
+    def delete_user_fully(self, user_id: int):
+        """Completely remove all traces of a user from the database"""
+        try:
+            self.users_collection.delete_one({'user_id': user_id})
+            self.subscribers_collection.delete_one({'user_id': user_id})
+            self.admins_collection.delete_one({'user_id': user_id})
+            self.vip_requests_collection.delete_many({'user_id': user_id})
+            self.notifications_collection.delete_many({'user_id': user_id})
+            self.activity_logs_collection.delete_many({'user_id': user_id})
+            self.signal_suggestions_collection.delete_many({'suggested_by': user_id})
+            self.scheduled_broadcasts_collection.delete_many({'created_by': user_id})
+            self.templates_collection.delete_many({'created_by': user_id})
+            
+            logger.info(f"🗑️ Permanently deleted all data for user {user_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Error executing full user deletion for {user_id}: {e}")
+            return False
+
     def add_subscriber(self, user_id: int):
         """Add a subscriber"""
         try:
@@ -2572,6 +2591,84 @@ class BroadcastBot:
 
         await context.bot.send_message(chat_id=query.from_user.id, text=status_msg)
         return ConversationHandler.END
+
+
+    async def execute_deletion_job(self, context: ContextTypes.DEFAULT_TYPE):
+        """Job to execute the actual database deletion"""
+        job = context.job
+        user_id = job.data
+        
+        logger.info(f"⏳ Executing scheduled deletion for User ID: {user_id}")
+        
+        success = self.db.delete_user_fully(user_id)
+        
+        if success:
+            logger.info(f"✅ Scheduled deletion completed for {user_id}")
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text="ℹ️ <b>Account Deleted</b>\nYour data has been permanently removed from our servers as requested.",
+                    parse_mode=ParseMode.HTML
+                )
+            except:
+                pass
+        else:
+            logger.error(f"❌ Scheduled deletion failed for {user_id}")
+
+    async def handle_deletion_approval(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle the admin clicking 'Approve Deletion'"""
+        query = update.callback_query
+        await query.answer()
+        
+        if query.from_user.id not in self.super_admin_ids:
+            await query.answer("❌ You are not authorized.", show_alert=True)
+            return
+
+        identifier = query.data.replace("del_approve_", "")
+        user_doc = None
+        if identifier.isdigit():
+            user_doc = self.db.users_collection.find_one({'user_id': int(identifier)})
+        else:
+            clean_username = identifier.replace("@", "")
+            user_doc = self.db.users_collection.find_one(
+                {'username': {'$regex': f'^{re.escape(clean_username)}$', '$options': 'i'}}
+            )
+        
+        if not user_doc:
+            await query.edit_message_text(f"❌ Error: User '{identifier}' not found in database. Cannot schedule deletion.")
+            return
+
+        user_id = user_doc['user_id']
+        context.job_queue.run_once(self.execute_deletion_job, 86400, data=user_id)
+        
+        try:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=(
+                    "⚠️ <b>Account Deletion Approved</b>\n\n"
+                    "Your request to delete your account has been processed.\n"
+                    "<b>Your data will be permanently wiped in 24 hours.</b>\n\n"
+                    "If this was a mistake, please contact support immediately."
+                ),
+                parse_mode=ParseMode.HTML
+            )
+        except Exception as e:
+            logger.warning(f"Could not notify user {user_id} of deletion approval: {e}")
+
+        admin_name = query.from_user.first_name
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M UTC')
+        
+        await query.edit_message_text(
+            text=(
+                f"🗑️ <b>Deletion Request</b>\n"
+                f"User: {identifier}\n"
+                f"Status: ✅ <b>Approved & Scheduled</b>\n"
+                f"Admin: {admin_name}\n"
+                f"Time: {timestamp}\n\n"
+                f"<i>System will auto-delete data in 24 hours.</i>"
+            ),
+            parse_mode=ParseMode.HTML
+        )
 
     async def end_of_day_duty_verification_job(self, context: ContextTypes.DEFAULT_TYPE):
         """Runs at 23:55 UTC to auto-complete duties and send summary."""
@@ -5816,20 +5913,43 @@ class BroadcastBot:
             return web.Response(text=html_content, content_type='text/html')
 
         async def api_delete_account_submit(request):
-            """Handle the deletion request"""
+            """Handle the deletion request with Admin Approval Button"""
             data = await request.post()
-            identifier = data.get('user_identifier')
+            identifier = data.get('user_identifier', '').strip()
+            reason = data.get('reason', 'No reason provided')
+            
+            if not identifier:
+                 return web.Response(text="<h1>Error</h1><p>User identifier is missing.</p>", content_type='text/html')
+
             logger.info(f"ACCOUNT DELETION REQUEST: {identifier}")
+            
+            keyboard = [
+                [InlineKeyboardButton("✅ Approve & Schedule Deletion", callback_data=f"del_approve_{identifier}")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            sent_count = 0
             for admin_id in self.super_admin_ids:
                 try:
                     await self.application.bot.send_message(
                         chat_id=admin_id,
-                        text=f"🗑️ <b>Deletion Request</b>\nUser: {identifier}\nReason: {data.get('reason')}",
-                        parse_mode='HTML'
+                        text=(
+                            f"🗑️ <b>Deletion Request</b>\n"
+                            f"User: {identifier}\n"
+                            f"Reason: {reason}\n\n"
+                            f"<i>Tap approve to schedule data wipe in 24 hours.</i>"
+                        ),
+                        parse_mode='HTML',
+                        reply_markup=reply_markup
                     )
-                except: pass
+                    sent_count += 1
+                except Exception as e:
+                    logger.error(f"Failed to send deletion request to admin {admin_id}: {e}")
 
-            return web.Response(text="<h1>Request Received</h1><p>Your request has been logged. Your data will be removed within 48 hours.</p>", content_type='text/html')
+            if sent_count > 0:
+                return web.Response(text="<h1>Request Received</h1><p>Your request has been logged and sent to admins for approval. You will be notified on Telegram.</p>", content_type='text/html')
+            else:
+                return web.Response(text="<h1>Error</h1><p>Could not contact admins. Please try again later.</p>", content_type='text/html', status=500)
         
         async def api_get_news(request):
             """API Endpoint: Get Forex News with Caching & Validation"""
@@ -6940,6 +7060,7 @@ class BroadcastBot:
         application.add_handler(CallbackQueryHandler(self.handle_force_submit, pattern="^(force_submit_text|force_submit_photo|cancel_signal)$"))
         application.add_handler(subscribe_handler)
         application.add_handler(vip_request_handler)
+        application.add_handler(CallbackQueryHandler(self.handle_deletion_approval, pattern="^del_approve_"))
         application.add_handler(
             MessageHandler(
                 filters.Regex(r"^(Hello|Hi|Hey|Good morning|Good afternoon|Good evening|What's up|Howdy|Greetings|Hey there)$"),
