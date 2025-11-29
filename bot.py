@@ -6641,7 +6641,6 @@ class BroadcastBot:
 
         async def health_check(request):
             return web.Response(text="PipSage API Running", status=200)
-
         app = web.Application()
         app.router.add_get('/health', health_check)
         app.router.add_get('/api/users/{user_id}/stats', api_get_stats)
