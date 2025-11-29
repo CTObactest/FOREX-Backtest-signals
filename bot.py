@@ -2603,9 +2603,11 @@ class SupportManager:
 
         if not original_user_id:
             forward_origin = getattr(reply_to, 'forward_origin', None)
+            
             if forward_origin and forward_origin.type == 'user':
                 original_user_id = forward_origin.sender_user.id
-            elif reply_to.forward_from:
+            
+            elif getattr(reply_to, 'forward_from', None):
                 original_user_id = reply_to.forward_from.id
         
         if original_user_id:
