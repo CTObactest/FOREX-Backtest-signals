@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, time as dt_time, timezone
 import textwrap
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import BadRequest
+from telegram import ReactionTypeEmoji, Update
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -2511,22 +2512,19 @@ class TwitterIntegration:
 
 
 class SupportManager:
-    """Manages the Support Group system"""
+    """Manages the Support Group system with Sessions and Reactions"""
     
+    SUPPORT_SESSION_TIMEOUT = 15 * 60 
+
     def __init__(self, db: MongoDBHandler, admin_ids: list):
         self.db = db
         self.admin_ids = admin_ids 
 
     async def on_new_chat_members(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """
-        Detects when the bot is added to a group. 
-        If added by an Admin, sets it as the Support Group.
-        """
+        """Detects when the bot is added to a group."""
         bot_id = context.bot.id
         new_members = update.message.new_chat_members
-        is_bot_added = any(member.id == bot_id for member in new_members)
-        
-        if not is_bot_added:
+        if not any(member.id == bot_id for member in new_members):
             return
 
         user_id = update.effective_user.id
@@ -2538,24 +2536,22 @@ class SupportManager:
             if self.db.set_support_group(chat_id):
                 await context.bot.send_message(
                     chat_id=chat_id,
-                    text=(
-                        "✅ <b>Support Group Configured!</b>\n\n"
-                        "This group has been set as the official Support Channel.\n"
-                        "Any direct messages sent to the bot will be forwarded here.\n"
-                        "<b>To reply to a user:</b> simply Reply to their forwarded message."
-                    ),
+                    text="✅ <b>Support Group Configured!</b>\n\nForwarded messages will appear here.",
                     parse_mode=ParseMode.HTML
                 )
-                logger.info(f"Support group set to {chat_id} by {user_id}")
             else:
-                await context.bot.send_message(chat_id=chat_id, text="❌ Database Error: Could not save support group settings.")
+                await context.bot.send_message(chat_id=chat_id, text="❌ Database Error.")
         else:
-            await context.bot.send_message(chat_id=chat_id, text="⚠️ Only Bot Admins can designate a support group.")
+            await context.bot.send_message(chat_id=chat_id, text="⚠️ Only Admins can set this.")
             await context.bot.leave_chat(chat_id)
 
     async def handle_user_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Forwards user DMs to the support group and SAVES Mapping."""
+        """
+        Forwards user DMs to the support group.
+        Only sends the 'Thank you' receipt if the chat has been inactive.
+        """
         support_group_id = self.db.get_support_group()
+        user_id = update.effective_user.id
         
         if not support_group_id:
             await update.message.reply_text("⚠️ Support is currently unavailable.")
@@ -2567,21 +2563,32 @@ class SupportManager:
                 from_chat_id=update.effective_chat.id,
                 message_id=update.message.message_id
             )
-            self.db.save_support_mapping(forwarded_msg.message_id, update.effective_user.id)
             
-            await update.message.reply_text(
-                "✅ <b>Message Sent to Support</b>\n"
-                "An admin will review your message shortly.",
-                parse_mode=ParseMode.HTML
+            self.db.save_support_mapping(forwarded_msg.message_id, user_id)
+            
+            user_doc = self.db.users_collection.find_one({'user_id': user_id})
+            last_support_time = user_doc.get('last_support_time', 0) if user_doc else 0
+            current_time = time.time()
+            
+            if (current_time - last_support_time) > self.SUPPORT_SESSION_TIMEOUT:
+                await update.message.reply_text(
+                    "Thank you for contacting us! Your message has been forwarded to our team and we will get back to you as soon as possible."
+                )
+            
+            self.db.users_collection.update_one(
+                {'user_id': user_id},
+                {'$set': {'last_support_time': current_time}},
+                upsert=True
             )
+
         except Exception as e:
             logger.error(f"Failed to forward support message: {e}")
-            await update.message.reply_text("❌ Error sending message to support.")
+            await update.message.reply_text("❌ Error connecting to support.")
 
     async def handle_admin_reply(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
         Handles replies sent by admins.
-        Uses Database Mapping to bypass Forwarding Privacy.
+        Uses Reactions (❤️/💔) for feedback instead of text.
         """
         support_group_id = self.db.get_support_group()
         
@@ -2600,7 +2607,7 @@ class SupportManager:
                 original_user_id = forward_origin.sender_user.id
             elif reply_to.forward_from:
                 original_user_id = reply_to.forward_from.id
-    
+        
         if original_user_id:
             try:
                 await context.bot.copy_message(
@@ -2608,12 +2615,24 @@ class SupportManager:
                     from_chat_id=update.effective_chat.id,
                     message_id=update.message.message_id
                 )
-                await update.message.reply_text("✅ Reply sent to user.")
+                
+                try:
+                    await update.message.set_reaction(reaction=[ReactionTypeEmoji("❤️")])
+                except Exception:
+                    pass
+
             except Exception as e:
                 logger.error(f"Failed to send reply to user {original_user_id}: {e}")
-                await update.message.reply_text(f"❌ Failed to send reply: {e}")
+                
+                try:
+                    await update.message.set_reaction(reaction=[ReactionTypeEmoji("💔")])
+                except Exception:
+                    await update.message.reply_text(f"❌ Failed: {e}")
         else:
-            await update.message.reply_text("❌ Could not find User ID. (Message too old or Database missing)")
+            try:
+                await update.message.set_reaction(reaction=[ReactionTypeEmoji("💔")])
+            except Exception:
+                await update.message.reply_text("❌ Could not find User ID.")
 
 class BroadcastBot:
     def __init__(self, token: str, super_admin_ids: List[int], mongo_handler: MongoDBHandler):
