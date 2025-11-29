@@ -895,6 +895,26 @@ class MongoDBHandler:
             logger.error(f"Error getting support group: {e}")
             return None
 
+    def save_support_mapping(self, group_message_id: int, user_id: int):
+        """Maps a forwarded message ID in the group to the original user ID."""
+        try:
+            self.db['support_mappings'].insert_one({
+                'group_message_id': group_message_id,
+                'user_id': user_id,
+                'created_at': time.time()
+            })
+        except Exception as e:
+            logger.error(f"Error saving support mapping: {e}")
+
+    def get_support_user_id(self, group_message_id: int) -> Optional[int]:
+        """Retrieves original user ID from the group message ID."""
+        try:
+            mapping = self.db['support_mappings'].find_one({'group_message_id': group_message_id})
+            return mapping['user_id'] if mapping else None
+        except Exception as e:
+            logger.error(f"Error getting support user ID: {e}")
+            return None
+
     
 
     def get_all_users(self) -> set:
@@ -2534,11 +2554,11 @@ class SupportManager:
             await context.bot.leave_chat(chat_id)
 
     async def handle_user_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Forwards user DMs to the support group."""
+        """Forwards user DMs to the support group and SAVES Mapping."""
         support_group_id = self.db.get_support_group()
         
         if not support_group_id:
-            await update.message.reply_text("⚠️ Support is currently unavailable (System not configured).")
+            await update.message.reply_text("⚠️ Support is currently unavailable.")
             return
 
         try:
@@ -2547,6 +2567,8 @@ class SupportManager:
                 from_chat_id=update.effective_chat.id,
                 message_id=update.message.message_id
             )
+            self.db.save_support_mapping(forwarded_msg.message_id, update.effective_user.id)
+            
             await update.message.reply_text(
                 "✅ <b>Message Sent to Support</b>\n"
                 "An admin will review your message shortly.",
@@ -2558,46 +2580,27 @@ class SupportManager:
 
     async def handle_admin_reply(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
-        Handles replies sent by admins inside the Support Group.
-        Forwards them back to the original user.
+        Handles replies sent by admins.
+        Uses Database Mapping to bypass Forwarding Privacy.
         """
         support_group_id = self.db.get_support_group()
         
-        # Verify this is happening in the correct group
         if update.effective_chat.id != support_group_id:
             return
 
-        # Ensure it is a reply
         reply_to = update.message.reply_to_message
         if not reply_to:
             return
 
-        original_user_id = None
-        
-        # --- ID Extraction Logic ---
-        
-        # 1. Try modern property (v20.6+) - Use getattr to avoid crash on older libs
-        forward_origin = getattr(reply_to, 'forward_origin', None)
-        
-        if forward_origin:
-            if forward_origin.type == 'user':
+        original_user_id = self.db.get_support_user_id(reply_to.message_id)
+
+        if not original_user_id:
+            forward_origin = getattr(reply_to, 'forward_origin', None)
+            if forward_origin and forward_origin.type == 'user':
                 original_user_id = forward_origin.sender_user.id
-            elif forward_origin.type == 'hidden_user':
-                await update.message.reply_text("❌ Cannot reply: User has 'Forwarding Privacy' enabled.")
-                return
-
-        elif reply_to.forward_from:
-            original_user_id = reply_to.forward_from.id
-            
-        elif hasattr(reply_to, 'api_kwargs') and reply_to.api_kwargs and 'forward_origin' in reply_to.api_kwargs:
-            fo = reply_to.api_kwargs['forward_origin']
-            if fo.get('type') == 'user':
-                original_user_id = fo.get('sender_user', {}).get('id')
-            elif fo.get('type') == 'hidden_user':
-                await update.message.reply_text("❌ Cannot reply: User has 'Forwarding Privacy' enabled.")
-                return
-
-        
+            elif reply_to.forward_from:
+                original_user_id = reply_to.forward_from.id
+    
         if original_user_id:
             try:
                 await context.bot.copy_message(
@@ -2610,8 +2613,7 @@ class SupportManager:
                 logger.error(f"Failed to send reply to user {original_user_id}: {e}")
                 await update.message.reply_text(f"❌ Failed to send reply: {e}")
         else:
-            if reply_to.forward_date:
-                await update.message.reply_text("❌ Could not determine user ID (Privacy settings or database mapping required).")
+            await update.message.reply_text("❌ Could not find User ID. (Message too old or Database missing)")
 
 class BroadcastBot:
     def __init__(self, token: str, super_admin_ids: List[int], mongo_handler: MongoDBHandler):
