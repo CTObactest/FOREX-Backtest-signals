@@ -872,6 +872,29 @@ class MongoDBHandler:
             logger.error(f"Error fetching notifications: {e}")
             return []
 
+
+    def set_support_group(self, chat_id: int):
+        """Sets the support group ID."""
+        try:
+            self.db['settings'].update_one(
+                {'_id': 'bot_config'},
+                {'$set': {'support_group_id': chat_id}},
+                upsert=True
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Error setting support group: {e}")
+            return False
+
+    def get_support_group(self) -> Optional[int]:
+        """Retrieves the support group ID."""
+        try:
+            config = self.db['settings'].find_one({'_id': 'bot_config'})
+            return config.get('support_group_id') if config else None
+        except Exception as e:
+            logger.error(f"Error getting support group: {e}")
+            return None
+
     
 
     def get_all_users(self) -> set:
@@ -2465,13 +2488,118 @@ class TwitterIntegration:
         except Exception as e:
             logger.error(f"Failed to post performance: {e}")
             return None
-            
+
+
+class SupportManager:
+    """Manages the Support Group system"""
+    
+    def __init__(self, db: MongoDBHandler, admin_ids: list):
+        self.db = db
+        self.admin_ids = admin_ids 
+
+    async def on_new_chat_members(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Detects when the bot is added to a group. 
+        If added by an Admin, sets it as the Support Group.
+        """
+        bot_id = context.bot.id
+        new_members = update.message.new_chat_members
+        is_bot_added = any(member.id == bot_id for member in new_members)
+        
+        if not is_bot_added:
+            return
+
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+        
+        is_admin = user_id in self.admin_ids or self.db.get_admin_role(user_id) is not None
+
+        if is_admin:
+            if self.db.set_support_group(chat_id):
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        "✅ <b>Support Group Configured!</b>\n\n"
+                        "This group has been set as the official Support Channel.\n"
+                        "Any direct messages sent to the bot will be forwarded here.\n"
+                        "<b>To reply to a user:</b> simply Reply to their forwarded message."
+                    ),
+                    parse_mode=ParseMode.HTML
+                )
+                logger.info(f"Support group set to {chat_id} by {user_id}")
+            else:
+                await context.bot.send_message(chat_id=chat_id, text="❌ Database Error: Could not save support group settings.")
+        else:
+            await context.bot.send_message(chat_id=chat_id, text="⚠️ Only Bot Admins can designate a support group.")
+            await context.bot.leave_chat(chat_id)
+
+    async def handle_user_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Forwards user DMs to the support group."""
+        support_group_id = self.db.get_support_group()
+        
+        if not support_group_id:
+            await update.message.reply_text("⚠️ Support is currently unavailable (System not configured).")
+            return
+
+        try:
+            forwarded_msg = await context.bot.forward_message(
+                chat_id=support_group_id,
+                from_chat_id=update.effective_chat.id,
+                message_id=update.message.message_id
+            )
+            await update.message.reply_text(
+                "✅ <b>Message Sent to Support</b>\n"
+                "An admin will review your message shortly.",
+                parse_mode=ParseMode.HTML
+            )
+        except Exception as e:
+            logger.error(f"Failed to forward support message: {e}")
+            await update.message.reply_text("❌ Error sending message to support.")
+
+    async def handle_admin_reply(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Handles replies sent by admins inside the Support Group.
+        Forwards them back to the original user.
+        """
+        support_group_id = self.db.get_support_group()
+        
+        if update.effective_chat.id != support_group_id:
+            return
+
+        reply_to = update.message.reply_to_message
+        if not reply_to or not reply_to.forward_origin:
+            return
+        
+        original_user_id = None
+        
+        if hasattr(reply_to.forward_origin, 'sender_user'):
+             original_user_id = reply_to.forward_origin.sender_user.id
+        
+        if not original_user_id:
+             if reply_to.forward_from:
+                 original_user_id = reply_to.forward_from.id
+        
+        if original_user_id:
+            try:
+                await context.bot.copy_message(
+                    chat_id=original_user_id,
+                    from_chat_id=update.effective_chat.id,
+                    message_id=update.message.message_id
+                )
+                await update.message.reply_text("✅ Reply sent to user.")
+            except Exception as e:
+                logger.error(f"Failed to send reply to user {original_user_id}: {e}")
+                await update.message.reply_text(f"❌ Failed to send reply: {e}")
+        else:
+            await update.message.reply_text("❌ Could not determine the original user. They may have strict privacy settings.")
+
 class BroadcastBot:
     def __init__(self, token: str, super_admin_ids: List[int], mongo_handler: MongoDBHandler):
         self.token = token
         self.super_admin_ids = super_admin_ids
         self.db = mongo_handler
         self.watermarker = ImageWatermarker()
+        self.support_manager = SupportManager(self.db, self.super_admin_ids)
         
         self.engagement_tracker = UserEngagementTracker(self.db)
         self.broadcast_limiter = BroadcastFrequencyManager(self.db)
@@ -7086,6 +7214,27 @@ class BroadcastBot:
                     self.forward_listener
                 )
             )
+
+        application.add_handler(
+            MessageHandler(
+                filters.StatusUpdate.NEW_CHAT_MEMBERS,
+                self.support_manager.on_new_chat_members
+            )
+        )
+
+        application.add_handler(
+            MessageHandler(
+                filters.ChatType.GROUPS & filters.REPLY,
+                self.support_manager.handle_admin_reply
+            )
+        )
+        
+        application.add_handler(
+            MessageHandler(
+                filters.ChatType.PRIVATE & ~filters.COMMAND,
+                self.support_manager.handle_user_message
+            )
+        )
 
         application.add_error_handler(self.error_handler)
 
