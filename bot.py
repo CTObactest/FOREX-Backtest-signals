@@ -5629,106 +5629,107 @@ class BroadcastBot:
             
                 return web.json_response({'error': 'Internal Server Error', 'details': str(e)}, status=500)
 
-    async def api_clear_notifications(request):
-        """API Endpoint: Clear all notifications for a user"""
-        try:
-            user_id = request.match_info['user_id']
-            try: 
-                user_id = int(user_id)
-            except (ValueError, TypeError): 
-                return web.json_response({'error': 'Invalid User ID'}, status=400)
 
-            result = self.db.notifications_collection.delete_many({'user_id': user_id})
-        
-            logger.info(f"✅ Cleared {result.deleted_count} notifications for user {user_id}")
-        
-            return web.json_response({
-                'success': True,
-                'deleted_count': result.deleted_count
-            })
-        
-        except Exception as e:
-            logger.error(f"API Clear Notifications Error: {e}")
-            return web.json_response({'error': str(e)}, status=500)
+        async def api_clear_notifications(request):
+            """API Endpoint: Clear all notifications for a user"""
+            try:
+                user_id = request.match_info['user_id']
+                try: 
+                    user_id = int(user_id)
+                except (ValueError, TypeError): 
+                    return web.json_response({'error': 'Invalid User ID'}, status=400)
 
-    async def api_mark_notification_read(request):
-        """API Endpoint: Mark a specific notification as read"""
-        try:
-            data = await request.json()
-            user_id = data.get('user_id')
-            notification_timestamp = data.get('timestamp')
-        
-            if not user_id or not notification_timestamp:
-                return web.json_response({'error': 'Missing parameters'}, status=400)
-        
-            try: 
-                user_id = int(user_id)
-                notification_timestamp = float(notification_timestamp)
-            except (ValueError, TypeError): 
-                return web.json_response({'error': 'Invalid parameters'}, status=400)
+                result = self.db.notifications_collection.delete_many({'user_id': user_id})
+                
+                logger.info(f"✅ Cleared {result.deleted_count} notifications for user {user_id}")
+                
+                return web.json_response({
+                    'success': True,
+                    'deleted_count': result.deleted_count
+                })
+                
+            except Exception as e:
+                logger.error(f"API Clear Notifications Error: {e}")
+                return web.json_response({'error': str(e)}, status=500)
 
-            result = self.db.notifications_collection.update_one(
-                {'user_id': user_id, 'timestamp': notification_timestamp},
-                {'$set': {'read': True}}
-            )
-        
-            return web.json_response({
-                'success': True,
-                'modified': result.modified_count > 0
-            })
-        
-        except Exception as e:
-            logger.error(f"API Mark Read Error: {e}")
-            return web.json_response({'error': str(e)}, status=500)
+        async def api_mark_notification_read(request):
+            """API Endpoint: Mark a specific notification as read"""
+            try:
+                data = await request.json()
+                user_id = data.get('user_id')
+                notification_timestamp = data.get('timestamp')
+                
+                if not user_id or not notification_timestamp:
+                    return web.json_response({'error': 'Missing parameters'}, status=400)
+                
+                try: 
+                    user_id = int(user_id)
+                    notification_timestamp = float(notification_timestamp)
+                except (ValueError, TypeError): 
+                    return web.json_response({'error': 'Invalid parameters'}, status=400)
 
-    async def api_mark_all_read(request):
-        """API Endpoint: Mark all notifications as read for a user"""
-        try:
-            user_id = request.match_info['user_id']
-            try: 
-                user_id = int(user_id)
-            except (ValueError, TypeError): 
-                return web.json_response({'error': 'Invalid User ID'}, status=400)
+                result = self.db.notifications_collection.update_one(
+                    {'user_id': user_id, 'timestamp': notification_timestamp},
+                    {'$set': {'read': True}}
+                )
+                
+                return web.json_response({
+                    'success': True,
+                    'modified': result.modified_count > 0
+                })
+                
+            except Exception as e:
+                logger.error(f"API Mark Read Error: {e}")
+                return web.json_response({'error': str(e)}, status=500)
 
-            result = self.db.notifications_collection.update_many(
-                {'user_id': user_id, 'read': False},
-                {'$set': {'read': True}}
-            )
-        
-            logger.info(f"✅ Marked {result.modified_count} notifications as read for user {user_id}")
-        
-            return web.json_response({
-                'success': True,
-                'modified_count': result.modified_count
-            })
-        
-        except Exception as e:
-            logger.error(f"API Mark All Read Error: {e}")
-            return web.json_response({'error': str(e)}, status=500)
+        async def api_mark_all_read(request):
+            """API Endpoint: Mark all notifications as read for a user"""
+            try:
+                user_id = request.match_info['user_id']
+                try: 
+                    user_id = int(user_id)
+                except (ValueError, TypeError): 
+                    return web.json_response({'error': 'Invalid User ID'}, status=400)
 
-    async def api_get_unread_count(request):
-        """API Endpoint: Get count of unread notifications"""
-        try:
-            user_id = request.match_info['user_id']
-            try: 
-                user_id = int(user_id)
-            except (ValueError, TypeError): 
-                return web.json_response({'error': 'Invalid User ID'}, status=400)
+                # Mark all as read
+                result = self.db.notifications_collection.update_many(
+                    {'user_id': user_id, 'read': False},
+                    {'$set': {'read': True}}
+                )
+                
+                logger.info(f"✅ Marked {result.modified_count} notifications as read for user {user_id}")
+                
+                return web.json_response({
+                    'success': True,
+                    'modified_count': result.modified_count
+                })
+                
+            except Exception as e:
+                logger.error(f"API Mark All Read Error: {e}")
+                return web.json_response({'error': str(e)}, status=500)
 
-            unread_count = self.db.notifications_collection.count_documents({
-                'user_id': user_id,
-                'read': False
-            })
-        
-            return web.json_response({
-                'success': True,
-                'unread_count': unread_count
-            })
-        
-        except Exception as e:
-            logger.error(f"API Unread Count Error: {e}")
-            return web.json_response({'error': str(e)}, status=500)
+        async def api_get_unread_count(request):
+            """API Endpoint: Get count of unread notifications"""
+            try:
+                user_id = request.match_info['user_id']
+                try: 
+                    user_id = int(user_id)
+                except (ValueError, TypeError): 
+                    return web.json_response({'error': 'Invalid User ID'}, status=400)
 
+                unread_count = self.db.notifications_collection.count_documents({
+                    'user_id': user_id,
+                    'read': False
+                })
+                
+                return web.json_response({
+                    'success': True,
+                    'unread_count': unread_count
+                })
+                
+            except Exception as e:
+                logger.error(f"API Unread Count Error: {e}")
+                return web.json_response({'error': str(e)}, status=500)
 
         async def api_check_push_status(request):
             """API Endpoint: Check if user has valid push token registered"""
