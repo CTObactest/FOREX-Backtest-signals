@@ -2632,6 +2632,17 @@ class SupportManager:
                 await update.message.set_reaction(reaction=[ReactionTypeEmoji("💔")])
             except: pass
 
+class FilterReplyToDecline(filters.MessageFilter):
+    """Filter to match replies to the Decline Reason prompt."""
+    def filter(self, message):
+        return (
+            message.reply_to_message 
+            and message.reply_to_message.text 
+            and "Reason for declining User" in message.reply_to_message.text
+        )
+
+filter_reply_to_decline = FilterReplyToDecline()
+
 class BroadcastBot:
     def __init__(self, token: str, super_admin_ids: List[int], mongo_handler: MongoDBHandler):
         self.token = token
@@ -7302,7 +7313,7 @@ class BroadcastBot:
         application.add_handler(subscribe_handler)
         application.add_handler(CallbackQueryHandler(self.handle_vip_request_review, pattern="^vip_"))
         application.add_handler(MessageHandler(
-            filters.REPLY & filters.Regex(r"declining User \d+\?"), 
+            filters.TEXT & filter_reply_to_decline, 
             self.handle_decline_reason_reply
         ))
         application.add_handler(CallbackQueryHandler(self.handle_deletion_approval, pattern="^del_approve_"))
