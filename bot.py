@@ -2588,8 +2588,11 @@ class SupportManager:
     async def handle_admin_reply(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
         Handles replies sent by admins.
-        Uses Reactions (❤️/💔) for feedback instead of text.
+        Reacts with ❤️ on success, 💔 on failure.
         """
+        if update.message.reply_to_message and "Reason for declining User" in update.message.reply_to_message.text:
+            return
+
         support_group_id = self.db.get_support_group()
         
         if update.effective_chat.id != support_group_id:
@@ -2603,10 +2606,8 @@ class SupportManager:
 
         if not original_user_id:
             forward_origin = getattr(reply_to, 'forward_origin', None)
-            
             if forward_origin and forward_origin.type == 'user':
                 original_user_id = forward_origin.sender_user.id
-            
             elif getattr(reply_to, 'forward_from', None):
                 original_user_id = reply_to.forward_from.id
         
@@ -2617,24 +2618,19 @@ class SupportManager:
                     from_chat_id=update.effective_chat.id,
                     message_id=update.message.message_id
                 )
-                
                 try:
                     await update.message.set_reaction(reaction=[ReactionTypeEmoji("❤️")])
-                except Exception:
-                    pass
+                except: pass
 
             except Exception as e:
-                logger.error(f"Failed to send reply to user {original_user_id}: {e}")
-                
+                logger.error(f"Failed to send reply: {e}")
                 try:
                     await update.message.set_reaction(reaction=[ReactionTypeEmoji("💔")])
-                except Exception:
-                    await update.message.reply_text(f"❌ Failed: {e}")
+                except: pass
         else:
             try:
                 await update.message.set_reaction(reaction=[ReactionTypeEmoji("💔")])
-            except Exception:
-                await update.message.reply_text("❌ Could not find User ID.")
+            except: pass
 
 class BroadcastBot:
     def __init__(self, token: str, super_admin_ids: List[int], mongo_handler: MongoDBHandler):
