@@ -2590,7 +2590,7 @@ class SupportManager:
         Handles replies sent by admins.
         Reacts with ❤️ on success, 💔 on failure.
         """
-        if update.message.reply_to_message and "Reason for declining User" in update.message.reply_to_message.text:
+        if update.message.reply_to_message and "Reason for declining" in update.message.reply_to_message.text:
             return
 
         support_group_id = self.db.get_support_group()
@@ -2618,30 +2618,16 @@ class SupportManager:
                     from_chat_id=update.effective_chat.id,
                     message_id=update.message.message_id
                 )
-                try:
-                    await update.message.set_reaction(reaction=[ReactionTypeEmoji("❤️")])
+                try: await update.message.set_reaction(reaction=[ReactionTypeEmoji("❤️")])
                 except: pass
 
             except Exception as e:
                 logger.error(f"Failed to send reply: {e}")
-                try:
-                    await update.message.set_reaction(reaction=[ReactionTypeEmoji("💔")])
+                try: await update.message.set_reaction(reaction=[ReactionTypeEmoji("💔")])
                 except: pass
         else:
-            try:
-                await update.message.set_reaction(reaction=[ReactionTypeEmoji("💔")])
+            try: await update.message.set_reaction(reaction=[ReactionTypeEmoji("💔")])
             except: pass
-
-class FilterReplyToDecline(filters.MessageFilter):
-    """Filter to match replies to the Decline Reason prompt."""
-    def filter(self, message):
-        return (
-            message.reply_to_message 
-            and message.reply_to_message.text 
-            and "Reason for declining User" in message.reply_to_message.text
-        )
-
-filter_reply_to_decline = FilterReplyToDecline()
 
 class BroadcastBot:
     def __init__(self, token: str, super_admin_ids: List[int], mongo_handler: MongoDBHandler):
@@ -3106,6 +3092,161 @@ class BroadcastBot:
             level += f" (+{bonus} Bonus)"
 
         return total_limit, level
+
+    async def handle_signal_review_v2(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Replaces the old signal review. Handles Approve (Rating) and Reject (ForceReply)."""
+        query = update.callback_query
+        await query.answer()
+
+        if query.from_user.id not in self.super_admin_ids:
+            await query.answer("❌ Not authorized", show_alert=True)
+            return
+
+        action, suggestion_id = query.data.split('_', 2)[1:]
+        
+        if action == "approve":
+            keyboard = [[
+                InlineKeyboardButton("1⭐", callback_data=f"sig_rate_1_{suggestion_id}"),
+                InlineKeyboardButton("2⭐", callback_data=f"sig_rate_2_{suggestion_id}"),
+                InlineKeyboardButton("3⭐", callback_data=f"sig_rate_3_{suggestion_id}"),
+                InlineKeyboardButton("4⭐", callback_data=f"sig_rate_4_{suggestion_id}"),
+                InlineKeyboardButton("5⭐", callback_data=f"sig_rate_5_{suggestion_id}")
+            ]]
+            await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
+
+        elif action == "reject":
+            force_text = f"✍️ <b>Reason for declining Signal {suggestion_id}?</b>\n\nReply to this message."
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=force_text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=ForceReply(selective=True)
+            )
+
+    async def receive_signal_rating_v2(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Stateless signal rating handler."""
+        query = update.callback_query
+        await query.answer()
+        
+        parts = query.data.split('_')
+        rating = int(parts[2])
+        suggestion_id = parts[3]
+
+        suggestion = self.db.get_suggestion_by_id(suggestion_id)
+        if not suggestion:
+            await query.edit_message_caption("❌ Error: Signal not found")
+            return
+
+        self.db.update_suggestion_status(suggestion_id, 'approved', query.from_user.id, rating=rating)
+        self.admin_duty_manager.credit_duty_for_action(query.from_user.id, 'signal_approved')
+        
+        suggester_id = suggestion['suggested_by']
+        self.engagement_tracker.update_engagement(suggester_id, 'signal_approved')
+        if rating == 5: self.engagement_tracker.update_engagement(suggester_id, 'signal_5_star')
+        
+        await self.achievement_system.check_and_award_achievements(suggester_id, context, self.db)
+        await self.broadcast_signal(context, suggestion)
+
+        try:
+            await context.bot.send_message(
+                chat_id=suggester_id,
+                text=f"✅ Your signal has been approved with {rating} stars!"
+            )
+        except: pass
+
+        original_caption = query.message.caption
+        await query.edit_message_caption(
+            caption=f"{original_caption}\n\n✅ <b>Approved ({rating}⭐)</b>",
+            reply_markup=None,
+            parse_mode=ParseMode.HTML
+        )
+
+    async def handle_signal_decline_reply(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Catches the reply for Signal Rejection."""
+        match = re.search(r"declining Signal (\w+)\?", update.message.reply_to_message.text)
+        if not match: return
+
+        suggestion_id = match.group(1)
+        reason = update.message.text
+        admin_id = update.effective_user.id
+
+        suggestion = self.db.get_suggestion_by_id(suggestion_id)
+        if suggestion:
+            self.db.update_suggestion_status(suggestion_id, 'rejected', admin_id, reason=reason)
+            self.admin_duty_manager.credit_duty_for_action(admin_id, 'signal_rejected')
+            
+            try:
+                await context.bot.send_message(
+                    chat_id=suggestion['suggested_by'],
+                    text=f"❌ Your signal suggestion was declined.\nReason: {reason}"
+                )
+            except: pass
+            
+            await update.message.reply_text(f"✅ Signal {suggestion_id} rejected.")
+        else:
+            await update.message.reply_text("❌ Signal not found in DB.")
+
+    async def handle_approval_review_v2(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Updated Broadcast Approval to use ForceReply for rejections."""
+        query = update.callback_query
+        await query.answer()
+
+        if not self.has_permission(query.from_user.id, Permission.APPROVE_BROADCASTS):
+            await query.answer("❌ Not authorized", show_alert=True)
+            return
+
+        action, approval_id = query.data.split('_', 2)[1:]
+        approval = self.db.get_approval_by_id(approval_id)
+        
+        if not approval:
+            await query.edit_message_text("❌ Not found.")
+            return
+
+        if action == "approve":
+            self.db.update_approval_status(approval_id, 'approved', query.from_user.id)
+            self.admin_duty_manager.credit_duty_for_action(query.from_user.id, 'broadcast_approved')
+            await self.execute_approved_broadcast(context, approval, query.from_user.id)
+            
+            try:
+                await context.bot.send_message(approval['created_by'], "✅ Your broadcast was approved!")
+            except: pass
+            
+            await query.edit_message_reply_markup(reply_markup=None)
+            await query.message.reply_text("✅ Broadcast Sent")
+
+        elif action == "reject":
+            force_text = f"✍️ <b>Reason for declining Broadcast {approval_id}?</b>\n\nReply to this message."
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=force_text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=ForceReply(selective=True)
+            )
+
+    async def handle_broadcast_decline_reply(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Catches the reply for Broadcast Rejection."""
+        match = re.search(r"declining Broadcast (\w+)\?", update.message.reply_to_message.text)
+        if not match: return
+
+        approval_id = match.group(1)
+        reason = update.message.text
+        admin_id = update.effective_user.id
+
+        approval = self.db.get_approval_by_id(approval_id)
+        if approval:
+            self.db.update_approval_status(approval_id, 'rejected', admin_id, reason=reason)
+            self.admin_duty_manager.credit_duty_for_action(admin_id, 'broadcast_rejected')
+            
+            try:
+                await context.bot.send_message(
+                    chat_id=approval['created_by'],
+                    text=f"❌ Your broadcast was rejected.\nReason: {reason}"
+                )
+            except: pass
+            
+            await update.message.reply_text(f"✅ Broadcast {approval_id} rejected.")
+        else:
+            await update.message.reply_text("❌ Broadcast not found.")
 
     async def start_v2(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Polished welcome with clear value prop & referral handling"""
@@ -7116,32 +7257,25 @@ class BroadcastBot:
         thread.start()
 
     def create_application(self):
-        """Create and configure application"""
+        """Create and configure application with all handlers."""
         application = Application.builder().token(self.token).build()
 
+        
         broadcast_handler = ConversationHandler(
             entry_points=[
                 CommandHandler("broadcast", self.start_broadcast),
                 CallbackQueryHandler(self.handle_template_callback, pattern="^tpl_use_")
             ],
             states={
-                WAITING_INITIAL_PLATFORM: [
-                    CallbackQueryHandler(self.handle_initial_platform_choice, pattern="^platform_")
-                ],
-                WAITING_MESSAGE: [
-                    MessageHandler(filters.ALL & ~filters.COMMAND, self.receive_broadcast_message)
-                ],
+                WAITING_INITIAL_PLATFORM: [CallbackQueryHandler(self.handle_initial_platform_choice, pattern="^platform_")],
+                WAITING_MESSAGE: [MessageHandler(filters.ALL & ~filters.COMMAND, self.receive_broadcast_message)],
                 WAITING_BUTTONS: [
                     CallbackQueryHandler(self.handle_watermark_choice, pattern="^watermark_"),
                     CallbackQueryHandler(self.handle_buttons_choice, pattern="^(add_buttons|skip_buttons)$"),
                     MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_buttons)
                 ],
-                WAITING_PROTECTION: [
-                    CallbackQueryHandler(self.handle_protection_choice, pattern="^protect_")
-                ],
-                WAITING_TARGET: [
-                    CallbackQueryHandler(self.handle_target_choice, pattern="^target_")
-                ]
+                WAITING_PROTECTION: [CallbackQueryHandler(self.handle_protection_choice, pattern="^protect_")],
+                WAITING_TARGET: [CallbackQueryHandler(self.handle_target_choice, pattern="^target_")]
             },
             fallbacks=[CommandHandler("cancel", self.cancel_broadcast)]
         )
@@ -7149,26 +7283,16 @@ class BroadcastBot:
         schedule_handler = ConversationHandler(
             entry_points=[CommandHandler("schedule", self.schedule_broadcast_start)],
             states={
-                WAITING_MESSAGE: [
-                    MessageHandler(filters.ALL & ~filters.COMMAND, self.receive_broadcast_message)
-                ],
+                WAITING_MESSAGE: [MessageHandler(filters.ALL & ~filters.COMMAND, self.receive_broadcast_message)],
                 WAITING_BUTTONS: [
                     CallbackQueryHandler(self.handle_watermark_choice, pattern="^watermark_"),
                     CallbackQueryHandler(self.handle_buttons_choice, pattern="^(add_buttons|skip_buttons)$"),
                     MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_buttons)
                 ],
-                WAITING_PROTECTION: [
-                    CallbackQueryHandler(self.handle_protection_choice, pattern="^protect_")
-                ],
-                WAITING_SCHEDULE_TIME: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_schedule_time)
-                ],
-                WAITING_SCHEDULE_REPEAT: [
-                    CallbackQueryHandler(self.receive_schedule_repeat, pattern="^repeat_")
-                ],
-                WAITING_TARGET: [
-                    CallbackQueryHandler(self.handle_target_choice, pattern="^target_")
-                ]
+                WAITING_PROTECTION: [CallbackQueryHandler(self.handle_protection_choice, pattern="^protect_")],
+                WAITING_SCHEDULE_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_schedule_time)],
+                WAITING_SCHEDULE_REPEAT: [CallbackQueryHandler(self.receive_schedule_repeat, pattern="^repeat_")],
+                WAITING_TARGET: [CallbackQueryHandler(self.handle_target_choice, pattern="^target_")]
             },
             fallbacks=[CommandHandler("cancel", self.cancel_broadcast)]
         )
@@ -7176,15 +7300,9 @@ class BroadcastBot:
         template_handler = ConversationHandler(
             entry_points=[CommandHandler("savetemplate", self.save_template_start)],
             states={
-                WAITING_TEMPLATE_MESSAGE: [
-                    MessageHandler(filters.ALL & ~filters.COMMAND, self.receive_template_message)
-                ],
-                WAITING_TEMPLATE_NAME: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_template_name)
-                ],
-                WAITING_TEMPLATE_CATEGORY: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_template_category)
-                ]
+                WAITING_TEMPLATE_MESSAGE: [MessageHandler(filters.ALL & ~filters.COMMAND, self.receive_template_message)],
+                WAITING_TEMPLATE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_template_name)],
+                WAITING_TEMPLATE_CATEGORY: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_template_category)]
             },
             fallbacks=[CommandHandler("cancel", self.cancel_broadcast)]
         )
@@ -7192,12 +7310,8 @@ class BroadcastBot:
         add_admin_handler = ConversationHandler(
             entry_points=[CommandHandler("addadmin", self.add_admin_start)],
             states={
-                WAITING_ADMIN_ID: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_admin_id)
-                ],
-                WAITING_ADMIN_ROLE: [
-                    CallbackQueryHandler(self.receive_admin_role, pattern="^role_")
-                ]
+                WAITING_ADMIN_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_admin_id)],
+                WAITING_ADMIN_ROLE: [CallbackQueryHandler(self.receive_admin_role, pattern="^role_")]
             },
             fallbacks=[CommandHandler("cancel", self.cancel_broadcast)]
         )
@@ -7217,51 +7331,17 @@ class BroadcastBot:
             entry_points=[CommandHandler("subscribe", self.subscribe_start)],
             states={
                 WAITING_VIP_GROUP: [CallbackQueryHandler(self.receive_vip_group)],
-                WAITING_ACCOUNT_CREATION_CONFIRMATION: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_account_creation_confirmation)
-                ],
-                WAITING_ACCOUNT_DATE: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_account_date)
-                ],
-                WAITING_CR_NUMBER: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_cr_number)
-                ],
-                WAITING_SCREENSHOT: [
-                    MessageHandler(filters.PHOTO, self.receive_screenshot)
-                ],
-                WAITING_KENNEDYNESPOT_CONFIRMATION: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_kennedynespot_confirmation)
-                ],
-                WAITING_BROKER_CHOICE: [
-                    CallbackQueryHandler(self.receive_broker_choice, pattern="^broker_")
-                ],
-                WAITING_ACCOUNT_NAME: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_account_name)
-                ],
-                WAITING_ACCOUNT_NUMBER: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_account_number)
-                ],
-                WAITING_TELEGRAM_ID: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_telegram_id)
-                ],
+                WAITING_ACCOUNT_CREATION_CONFIRMATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_account_creation_confirmation)],
+                WAITING_ACCOUNT_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_account_date)],
+                WAITING_CR_NUMBER: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_cr_number)],
+                WAITING_SCREENSHOT: [MessageHandler(filters.PHOTO, self.receive_screenshot)],
+                WAITING_KENNEDYNESPOT_CONFIRMATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_kennedynespot_confirmation)],
+                WAITING_BROKER_CHOICE: [CallbackQueryHandler(self.receive_broker_choice, pattern="^broker_")],
+                WAITING_ACCOUNT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_account_name)],
+                WAITING_ACCOUNT_NUMBER: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_account_number)],
+                WAITING_TELEGRAM_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_telegram_id)],
             },
             fallbacks=[CommandHandler("cancel", self.cancel_broadcast)],
-        )
-        
-        signal_review_handler = ConversationHandler(
-            entry_points=[CallbackQueryHandler(self.handle_signal_review, pattern=r"^sig_(approve|reject)_")],
-            states={
-                WAITING_SIGNAL_RATING: [
-                    CallbackQueryHandler(self.receive_signal_rating, pattern=r"^sig_rate_")
-                ],
-                
-                WAITING_SIGNAL_REJECTION_REASON: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_signal_rejection_reason), # <--- Added comma here
-                    CallbackQueryHandler(self.handle_quick_rejection_reason, pattern="^reason_")
-                ]
-            },
-            fallbacks=[CommandHandler("cancel", self.cancel_broadcast)],
-            conversation_timeout=300 
         )
 
         application.add_handler(CommandHandler("start", self.start_v2)) 
@@ -7274,15 +7354,10 @@ class BroadcastBot:
         application.add_handler(CommandHandler("subscribers", self.list_subscribers))
         application.add_handler(CommandHandler("approvals", self.list_approvals))
         application.add_handler(CommandHandler("signals", self.list_signal_suggestions))
-        application.add_handler(CallbackQueryHandler(self.handle_approval_review, pattern="^app_"))
-        application.add_handler(signal_review_handler)
-        application.add_handler(add_admin_handler)
         application.add_handler(CommandHandler("removeadmin", self.remove_admin_command))
         application.add_handler(CommandHandler("admins", self.list_admins))
         application.add_handler(CommandHandler("logs", self.view_logs))
         application.add_handler(CommandHandler("mystats", self.my_stats))
-        application.add_handler(CallbackQueryHandler(self.handle_template_callback, pattern="^tpl_"))
-        application.add_handler(CallbackQueryHandler(self.list_templates_callback, pattern="^tpl_list_all$"))
         application.add_handler(CommandHandler("performance", self.show_performance_command))
         application.add_handler(CommandHandler("referral", self.show_referral_command))
         application.add_handler(CommandHandler("testimonials", show_testimonials_command)) 
@@ -7302,21 +7377,23 @@ class BroadcastBot:
         application.add_handler(CommandHandler("dutycomplete", self.duty_complete_command))
         application.add_handler(CommandHandler("dutystats", self.duty_stats_command))
         application.add_handler(CommandHandler("templates", self.list_templates))
+        application.add_handler(CommandHandler("scheduled", self.list_scheduled))
+        application.add_handler(CommandHandler("cancel_scheduled", self.cancel_scheduled_command))
+        
+        application.add_handler(add_admin_handler)
         application.add_handler(template_handler)
         application.add_handler(broadcast_handler)
         application.add_handler(schedule_handler)
-        application.add_handler(CommandHandler("scheduled", self.list_scheduled))
-        application.add_handler(CommandHandler("cancel_scheduled", self.cancel_scheduled_command))
         application.add_handler(signal_handler)
-        application.add_handler(CallbackQueryHandler(self.handle_vip_request_review, pattern="^vip_"))
-        application.add_handler(CallbackQueryHandler(self.handle_force_submit, pattern="^(force_submit_text|force_submit_photo|cancel_signal)$"))
         application.add_handler(subscribe_handler)
-        application.add_handler(CallbackQueryHandler(self.handle_vip_request_review, pattern="^vip_"))
-        application.add_handler(MessageHandler(
-            filters.TEXT & filter_reply_to_decline, 
-            self.handle_decline_reason_reply
-        ))
+
+        application.add_handler(CallbackQueryHandler(self.handle_template_callback, pattern="^tpl_"))
+        application.add_handler(CallbackQueryHandler(self.list_templates_callback, pattern="^tpl_list_all$"))
+        
+        application.add_handler(CallbackQueryHandler(self.handle_force_submit, pattern="^(force_submit_text|force_submit_photo|cancel_signal)$"))
+        
         application.add_handler(CallbackQueryHandler(self.handle_deletion_approval, pattern="^del_approve_"))
+
         application.add_handler(
             MessageHandler(
                 filters.ChatType.PRIVATE & filters.Regex(r"^(Hello|Hi|Hey|Good morning|Good afternoon|Good evening|What's up|Howdy|Greetings|Hey there)$"),
@@ -7324,24 +7401,24 @@ class BroadcastBot:
             )
         )
 
-        if self.edu_content_manager:
-            try:
-                channel_id_int = int(self.edu_content_manager.channel_id)
-                application.add_handler(
-                    MessageHandler(
-                        filters.Chat(chat_id=channel_id_int) & filters.UpdateType.CHANNEL_POST,
-                        self.channel_post_handler
-                    )
-                )
-            except ValueError:
-                logger.error("EDUCATION_CHANNEL_ID must be an integer (e.g. -10012345...) for the listener to work.")
+        filter_reply_vip = filters.REPLY & filters.create(
+            lambda _, __, msg: msg.reply_to_message.text and "Reason for declining User" in msg.reply_to_message.text
+        )
+        filter_reply_signal = filters.REPLY & filters.create(
+            lambda _, __, msg: msg.reply_to_message.text and "Reason for declining Signal" in msg.reply_to_message.text
+        )
+        filter_reply_broadcast = filters.REPLY & filters.create(
+            lambda _, __, msg: msg.reply_to_message.text and "Reason for declining Broadcast" in msg.reply_to_message.text
+        )
 
-            application.add_handler(
-                MessageHandler(
-                    filters.FORWARDED & filters.User(user_id=self.super_admin_ids), 
-                    self.forward_listener
-                )
-            )
+        application.add_handler(MessageHandler(filter_reply_vip, self.handle_decline_reason_reply))
+        application.add_handler(MessageHandler(filter_reply_signal, self.handle_signal_decline_reply))
+        application.add_handler(MessageHandler(filter_reply_broadcast, self.handle_broadcast_decline_reply))
+
+        application.add_handler(CallbackQueryHandler(self.handle_vip_request_review, pattern="^vip_"))
+        application.add_handler(CallbackQueryHandler(self.handle_signal_review_v2, pattern="^sig_(approve|reject)_"))
+        application.add_handler(CallbackQueryHandler(self.receive_signal_rating_v2, pattern="^sig_rate_"))
+        application.add_handler(CallbackQueryHandler(self.handle_approval_review_v2, pattern="^app_"))
 
         application.add_handler(
             MessageHandler(
@@ -7363,6 +7440,25 @@ class BroadcastBot:
                 self.support_manager.handle_user_message
             )
         )
+
+        if self.edu_content_manager:
+            try:
+                channel_id_int = int(self.edu_content_manager.channel_id)
+                application.add_handler(
+                    MessageHandler(
+                        filters.Chat(chat_id=channel_id_int) & filters.UpdateType.CHANNEL_POST,
+                        self.channel_post_handler
+                    )
+                )
+            except ValueError:
+                logger.error("EDUCATION_CHANNEL_ID must be an integer for the listener to work.")
+
+            application.add_handler(
+                MessageHandler(
+                    filters.FORWARDED & filters.User(user_id=self.super_admin_ids), 
+                    self.forward_listener
+                )
+            )
 
         application.add_error_handler(self.error_handler)
 
