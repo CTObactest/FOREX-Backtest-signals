@@ -7280,7 +7280,7 @@ class BroadcastBot:
         application.add_handler(CallbackQueryHandler(self.handle_deletion_approval, pattern="^del_approve_"))
         application.add_handler(
             MessageHandler(
-                filters.Regex(r"^(Hello|Hi|Hey|Good morning|Good afternoon|Good evening|What's up|Howdy|Greetings|Hey there)$"),
+                filters.ChatType.PRIVATE & filters.Regex(r"^(Hello|Hi|Hey|Good morning|Good afternoon|Good evening|What's up|Howdy|Greetings|Hey there)$"),
                 self.handle_greeting,
             )
         )
