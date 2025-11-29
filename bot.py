@@ -2563,21 +2563,40 @@ class SupportManager:
         """
         support_group_id = self.db.get_support_group()
         
+        # Verify this is happening in the correct group
         if update.effective_chat.id != support_group_id:
             return
 
+        # Ensure it is a reply
         reply_to = update.message.reply_to_message
-        if not reply_to or not reply_to.forward_origin:
+        if not reply_to:
             return
-        
+
         original_user_id = None
         
-        if hasattr(reply_to.forward_origin, 'sender_user'):
-             original_user_id = reply_to.forward_origin.sender_user.id
+        # --- ID Extraction Logic ---
         
-        if not original_user_id:
-             if reply_to.forward_from:
-                 original_user_id = reply_to.forward_from.id
+        # 1. Try modern property (v20.6+) - Use getattr to avoid crash on older libs
+        forward_origin = getattr(reply_to, 'forward_origin', None)
+        
+        if forward_origin:
+            if forward_origin.type == 'user':
+                original_user_id = forward_origin.sender_user.id
+            elif forward_origin.type == 'hidden_user':
+                await update.message.reply_text("❌ Cannot reply: User has 'Forwarding Privacy' enabled.")
+                return
+
+        elif reply_to.forward_from:
+            original_user_id = reply_to.forward_from.id
+            
+        elif hasattr(reply_to, 'api_kwargs') and reply_to.api_kwargs and 'forward_origin' in reply_to.api_kwargs:
+            fo = reply_to.api_kwargs['forward_origin']
+            if fo.get('type') == 'user':
+                original_user_id = fo.get('sender_user', {}).get('id')
+            elif fo.get('type') == 'hidden_user':
+                await update.message.reply_text("❌ Cannot reply: User has 'Forwarding Privacy' enabled.")
+                return
+
         
         if original_user_id:
             try:
@@ -2591,7 +2610,8 @@ class SupportManager:
                 logger.error(f"Failed to send reply to user {original_user_id}: {e}")
                 await update.message.reply_text(f"❌ Failed to send reply: {e}")
         else:
-            await update.message.reply_text("❌ Could not determine the original user. They may have strict privacy settings.")
+            if reply_to.forward_date:
+                await update.message.reply_text("❌ Could not determine user ID (Privacy settings or database mapping required).")
 
 class BroadcastBot:
     def __init__(self, token: str, super_admin_ids: List[int], mongo_handler: MongoDBHandler):
@@ -6905,7 +6925,7 @@ class BroadcastBot:
                             asyncio.create_task(self.send_push_to_users(
                                 [author_id],
                                 "New Reaction ❤️",
-                                f"Your post liked by {liker_name}",
+                                f"Your post was liked by {liker_name}",
                                 data={'screen': 'Signals', 'initialTab': 'broadcasts'}
                             ))
                             
