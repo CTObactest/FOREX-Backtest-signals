@@ -6,7 +6,7 @@ from aiohttp import web
 import threading
 from datetime import datetime, timedelta, time as dt_time, timezone
 import textwrap
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
 from telegram.error import BadRequest
 from telegram import ReactionTypeEmoji, Update
 from telegram.ext import (
