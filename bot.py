@@ -2784,6 +2784,59 @@ class BroadcastBot:
         else:
             logger.error(f"❌ Scheduled deletion failed for {user_id}")
 
+    async def send_admin_notification(self, text: str, photo=None, reply_markup=None, fallback_admins: list = None):
+        """
+        Centralized method to notify admins.
+        Prioritizes the Support Group. Falls back to individual DMs if no group is set.
+        """
+        support_group_id = self.db.get_support_group()
+        
+        if support_group_id:
+            try:
+                if photo:
+                    if hasattr(photo, 'seek'): photo.seek(0)
+                    await self.application.bot.send_photo(
+                        chat_id=support_group_id,
+                        photo=photo,
+                        caption=text,
+                        reply_markup=reply_markup,
+                        parse_mode=ParseMode.HTML
+                    )
+                else:
+                    await self.application.bot.send_message(
+                        chat_id=support_group_id,
+                        text=text,
+                        reply_markup=reply_markup,
+                        parse_mode=ParseMode.HTML
+                    )
+                return
+            except Exception as e:
+                logger.error(f"Failed to send to support group: {e}")
+               
+        if not fallback_admins:
+            return
+
+        for admin_id in set(fallback_admins):
+            try:
+                if photo:
+                    if hasattr(photo, 'seek'): photo.seek(0)
+                    await self.application.bot.send_photo(
+                        chat_id=admin_id,
+                        photo=photo,
+                        caption=text,
+                        reply_markup=reply_markup,
+                        parse_mode=ParseMode.HTML
+                    )
+                else:
+                    await self.application.bot.send_message(
+                        chat_id=admin_id,
+                        text=text,
+                        reply_markup=reply_markup,
+                        parse_mode=ParseMode.HTML
+                    )
+            except Exception as e:
+                logger.error(f"Failed to notify admin {admin_id}: {e}")
+
     async def handle_deletion_approval(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle the admin clicking 'Approve Deletion'"""
         query = update.callback_query
@@ -3821,7 +3874,7 @@ class BroadcastBot:
         return ConversationHandler.END
 
     async def notify_super_admins_new_suggestion(self, context: ContextTypes.DEFAULT_TYPE, suggestion_id: str):
-        """Notify super admins of new signal suggestion"""
+        """Notify admins of new signal suggestion via Support Group or DM"""
         suggestion = self.db.get_suggestion_by_id(suggestion_id)
         if not suggestion:
             return
@@ -3830,17 +3883,16 @@ class BroadcastBot:
         suggester = suggestion['suggester_name']
 
         notification = (
-            f"💡 New Signal Suggestion!\n\n"
+            f"💡 <b>New Signal Suggestion!</b>\n\n"
             f"From: {suggester}\n"
-            f"ID: {short_id}\n\n"
+            f"ID: <code>{short_id}</code>\n\n"
             f"Use /signals to review pending suggestions."
         )
 
-        for admin_id in self.super_admin_ids:
-            try:
-                await context.bot.send_message(chat_id=admin_id, text=notification)
-            except Exception as e:
-                logger.error(f"Failed to notify super admin {admin_id}: {e}")
+        await self.send_admin_notification(
+            text=notification,
+            fallback_admins=self.super_admin_ids
+        )
 
     async def list_signal_suggestions(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /signals command"""
@@ -4931,18 +4983,19 @@ class BroadcastBot:
         creator = approval['creator_name']
 
         notification = (
-            f"⏳ New Broadcast Pending Approval!\n\n"
+            f"⏳ <b>New Broadcast Pending Approval!</b>\n\n"
             f"Creator: {creator}\n"
-            f"ID: {short_id}\n\n"
+            f"ID: <code>{short_id}</code>\n\n"
             f"Use /approvals to review pending broadcasts."
         )
+        
         admins = self.db.get_all_admins()
-        for admin in admins:
-            if self.has_permission(admin['user_id'], Permission.APPROVE_BROADCASTS):
-                try:
-                    await context.bot.send_message(chat_id=admin['user_id'], text=notification)
-                except Exception as e:
-                    logger.error(f"Failed to notify approver {admin['user_id']}: {e}")
+        approvers = [a['user_id'] for a in admins if self.has_permission(a['user_id'], Permission.APPROVE_BROADCASTS)]
+
+        await self.send_admin_notification(
+            text=notification,
+            fallback_admins=approvers
+        )
 
     async def cancel_broadcast(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Cancel broadcast operation"""
@@ -6100,20 +6153,20 @@ class BroadcastBot:
             sent_count = 0
             for admin_id in self.super_admin_ids:
                 try:
-                    await self.application.bot.send_message(
-                        chat_id=admin_id,
-                        text=(
-                            f"🗑️ <b>Deletion Request</b>\n"
-                            f"User: {identifier}\n"
-                            f"Reason: {reason}\n\n"
-                            f"<i>Tap approve to schedule data wipe in 24 hours.</i>"
-                        ),
-                        parse_mode='HTML',
-                        reply_markup=reply_markup
-                    )
-                    sent_count += 1
-                except Exception as e:
-                    logger.error(f"Failed to send deletion request to admin {admin_id}: {e}")
+                await self.send_admin_notification(
+                    text=(
+                        f"🗑️ <b>Deletion Request</b>\n"
+                        f"User: {identifier}\n"
+                        f"Reason: {reason}\n\n"
+                        f"<i>Tap approve to schedule data wipe in 24 hours.</i>"
+                    ),
+                    reply_markup=reply_markup,
+                    fallback_admins=self.super_admin_ids
+                )
+                sent_count = 1 
+            except Exception as e:
+                logger.error(f"Failed to send deletion request: {e}")
+                sent_count = 0
 
             if sent_count > 0:
                 return web.Response(text="<h1>Request Received</h1><p>Your request has been logged and sent to admins for approval. You will be notified on Telegram.</p>", content_type='text/html')
@@ -6222,8 +6275,8 @@ class BroadcastBot:
             """
             API Endpoint: Handle VIP Subscriptions
             1. Checks Subscription Status First (Unlocks Frontend if already VIP).
-            2. Deriv: Tries Auto-Verification (CR + OCR). If fail -> Store Request -> Forward to Admin.
-            3. Currencies: Store Request -> Forwards to Admin.
+            2. Deriv: Tries Auto-Verification (CR + OCR). If fail -> Store Request -> Forward to Support Group/Admins.
+            3. Currencies: Store Request -> Forward to Support Group/Admins.
             """
             try:
                 reader = await request.multipart()
@@ -6312,7 +6365,6 @@ class BroadcastBot:
                         return web.json_response({'success': True, 'message': 'Deriv VIP Activated Automatically'})
                     
                     else:
-                    
                         details = {'cr_number': cr_number}
                         self.db.create_vip_request(user_id, 'deriv', details)
                         
@@ -6336,18 +6388,16 @@ class BroadcastBot:
                         reply_markup = InlineKeyboardMarkup(keyboard)
 
                         sent_count = 0
-                        for admin_id in self.super_admin_ids:
-                            try:
-                                await self.application.bot.send_photo(
-                                    chat_id=admin_id,
-                                    photo=io.BytesIO(image_data),
-                                    caption=user_info,
-                                    reply_markup=reply_markup,
-                                    parse_mode='HTML'
-                                )
-                                sent_count += 1
-                            except Exception as e:
-                                logger.error(f"Failed to forward failed Deriv request to admin {admin_id}: {e}")
+                        try:
+                            await self.send_admin_notification(
+                                text=user_info,
+                                photo=io.BytesIO(image_data),
+                                reply_markup=reply_markup,
+                                fallback_admins=self.super_admin_ids
+                            )
+                            sent_count = 1
+                        except Exception as e:
+                            logger.error(f"Failed to forward failed Deriv request to support: {e}")
 
                         if sent_count > 0:
                             return web.json_response({
@@ -6393,17 +6443,15 @@ class BroadcastBot:
                     reply_markup = InlineKeyboardMarkup(keyboard)
 
                     sent_count = 0
-                    for admin_id in self.super_admin_ids:
-                        try:
-                            await self.application.bot.send_message(
-                                chat_id=admin_id, 
-                                text=user_info,
-                                reply_markup=reply_markup,
-                                parse_mode='HTML'
-                            )
-                            sent_count += 1
-                        except Exception as e:
-                            logger.error(f"Failed to notify admin {admin_id}: {e}")
+                    try:
+                        await self.send_admin_notification(
+                            text=user_info,
+                            reply_markup=reply_markup,
+                            fallback_admins=self.super_admin_ids
+                        )
+                        sent_count = 1
+                    except Exception as e:
+                        logger.error(f"Failed to notify support for currencies request: {e}")
 
                     if sent_count > 0:
                         return web.json_response({'success': True, 'message': 'Request sent to admins for approval'})
@@ -7606,15 +7654,11 @@ class BroadcastBot:
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        for admin_id in self.super_admin_ids:
-            try:
-                await context.bot.send_message(
-                    chat_id=admin_id, 
-                    text=user_info,
-                    reply_markup=reply_markup
-                )
-            except Exception as e:
-                logger.error(f"Failed to notify super admin {admin_id}: {e}")
+        await self.send_admin_notification(
+            text=user_info,
+            reply_markup=reply_markup,
+            fallback_admins=self.super_admin_ids
+        )
 
         await update.message.reply_text(
             "Thank you! Your details have been sent to the admins for approval. You will be notified once it's reviewed."
