@@ -2629,6 +2629,22 @@ class SupportManager:
             try: await update.message.set_reaction(reaction=[ReactionTypeEmoji("💔")])
             except: pass
 
+class ReplyContainsFilter(filters.MessageFilter):
+    """
+    Custom filter to check if the replied-to message contains specific text.
+    Replaces the old filters.create() method.
+    """
+    def __init__(self, text):
+        self.text = text
+        super().__init__()
+
+    def filter(self, message):
+        return (
+            message.reply_to_message 
+            and message.reply_to_message.text 
+            and self.text in message.reply_to_message.text
+        )
+
 class BroadcastBot:
     def __init__(self, token: str, super_admin_ids: List[int], mongo_handler: MongoDBHandler):
         self.token = token
@@ -7257,7 +7273,7 @@ class BroadcastBot:
         thread.start()
 
     def create_application(self):
-        """Create and configure application with all handlers."""
+        """Create and configure application with all handlers and jobs."""
         application = Application.builder().token(self.token).build()
 
         
@@ -7401,15 +7417,9 @@ class BroadcastBot:
             )
         )
 
-        filter_reply_vip = filters.REPLY & filters.create(
-            lambda _, __, msg: msg.reply_to_message.text and "Reason for declining User" in msg.reply_to_message.text
-        )
-        filter_reply_signal = filters.REPLY & filters.create(
-            lambda _, __, msg: msg.reply_to_message.text and "Reason for declining Signal" in msg.reply_to_message.text
-        )
-        filter_reply_broadcast = filters.REPLY & filters.create(
-            lambda _, __, msg: msg.reply_to_message.text and "Reason for declining Broadcast" in msg.reply_to_message.text
-        )
+        filter_reply_vip = filters.REPLY & ReplyContainsFilter("Reason for declining User")
+        filter_reply_signal = filters.REPLY & ReplyContainsFilter("Reason for declining Signal")
+        filter_reply_broadcast = filters.REPLY & ReplyContainsFilter("Reason for declining Broadcast")
 
         application.add_handler(MessageHandler(filter_reply_vip, self.handle_decline_reason_reply))
         application.add_handler(MessageHandler(filter_reply_signal, self.handle_signal_decline_reply))
@@ -7517,8 +7527,8 @@ class BroadcastBot:
             self.end_of_day_duty_verification_job,
             time=utc_end_day
         )
-        return application
 
+        return application
     async def re_engage_users_job(self, context: ContextTypes.DEFAULT_TYPE):
         await self.engagement_tracker.re_engage_inactive_users(context)
 
