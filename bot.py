@@ -2892,6 +2892,42 @@ class BroadcastBot:
             parse_mode=ParseMode.HTML
         )
 
+    async def handle_decline_reason_reply(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """ Catches the admin's reply with the decline reason. """
+        
+        if not update.message.reply_to_message:
+            return
+            
+        bot_msg = update.message.reply_to_message.text
+        
+        match = re.search(r"declining User (\d+)\?", bot_msg)
+        
+        if not match:
+            return 
+
+        target_user_id = int(match.group(1))
+        reason = update.message.text
+        admin_id = update.effective_user.id
+        admin_name = update.effective_user.first_name
+
+        self.db.update_vip_request_status(target_user_id, 'rejected', admin_id, reason=reason)
+        self.db.log_activity(admin_id, 'vip_declined', {'user_id': target_user_id, 'reason': reason})
+        self.admin_duty_manager.credit_duty_for_action(admin_id, 'vip_declined')
+
+        asyncio.create_task(self.send_push_to_users(
+            [target_user_id], "VIP Request Declined", f"Reason: {reason}",
+            data={'screen': 'Home'}
+        ))
+        try:
+            await context.bot.send_message(
+                chat_id=target_user_id,
+                text=f"❌ Your VIP request was declined.\nReason: {reason}"
+            )
+        except Exception as e:
+            logger.warning(f"Could not msg user {target_user_id}: {e}")
+
+        await update.message.reply_text(f"✅ User {target_user_id} declined. Reason sent.")
+
     async def end_of_day_duty_verification_job(self, context: ContextTypes.DEFAULT_TYPE):
         """Runs at 23:55 UTC to auto-complete duties and send summary."""
         try:
@@ -7202,17 +7238,6 @@ class BroadcastBot:
             },
             fallbacks=[CommandHandler("cancel", self.cancel_broadcast)],
         )
-
-        vip_request_handler = ConversationHandler(
-            entry_points=[CallbackQueryHandler(self.handle_vip_request_review, pattern="^vip_")],
-            states={
-                WAITING_DECLINE_REASON: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_decline_reason)
-                ]
-            },
-            fallbacks=[CommandHandler("cancel", self.cancel_broadcast)]
-        )
-
         
         signal_review_handler = ConversationHandler(
             entry_points=[CallbackQueryHandler(self.handle_signal_review, pattern=r"^sig_(approve|reject)_")],
@@ -7274,9 +7299,14 @@ class BroadcastBot:
         application.add_handler(CommandHandler("scheduled", self.list_scheduled))
         application.add_handler(CommandHandler("cancel_scheduled", self.cancel_scheduled_command))
         application.add_handler(signal_handler)
+        application.add_handler(CallbackQueryHandler(self.handle_vip_request_review, pattern="^vip_"))
         application.add_handler(CallbackQueryHandler(self.handle_force_submit, pattern="^(force_submit_text|force_submit_photo|cancel_signal)$"))
         application.add_handler(subscribe_handler)
-        application.add_handler(vip_request_handler)
+        application.add_handler(CallbackQueryHandler(self.handle_vip_request_review, pattern="^vip_"))
+        application.add_handler(MessageHandler(
+            filters.REPLY & filters.Regex(r"declining User \d+\?"), 
+            self.handle_decline_reason_reply
+        ))
         application.add_handler(CallbackQueryHandler(self.handle_deletion_approval, pattern="^del_approve_"))
         application.add_handler(
             MessageHandler(
@@ -7666,68 +7696,52 @@ class BroadcastBot:
         return ConversationHandler.END
 
     async def handle_vip_request_review(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle the approve/decline decision from an admin."""
+        """Handle the approve/decline decision with ForceReply for declines."""
         query = update.callback_query
         await query.answer()
 
-        admin_id = query.from_user.id
-        if admin_id not in self.super_admin_ids:
-            await query.answer("You are not authorized to perform this action.", show_alert=True)
+        user_id = query.from_user.id
+        if user_id not in self.super_admin_ids and not self.db.get_admin_role(user_id):
+            await query.answer("❌ You are not authorized.", show_alert=True)
             return
 
-        action, user_id_str = query.data.split('_')[1:]
-        user_id = int(user_id_str)
+        action, target_user_id_str = query.data.split('_')[1:]
+        target_user_id = int(target_user_id_str)
 
         if action == "approve":
-            self.db.add_subscriber(user_id)
-            self.db.update_vip_request_status(user_id, 'approved', admin_id)
-
-            self.db.log_activity(admin_id, 'vip_approved', {'user_id': user_id})
-            self.admin_duty_manager.credit_duty_for_action(admin_id, 'vip_approved')
-            self.engagement_tracker.update_engagement(user_id, 'vip_subscribed')
+            self.db.add_subscriber(target_user_id)
+            self.db.update_vip_request_status(target_user_id, 'approved', user_id)
             
+            self.db.log_activity(user_id, 'vip_approved', {'user_id': target_user_id})
+            self.admin_duty_manager.credit_duty_for_action(user_id, 'vip_approved')
+            self.engagement_tracker.update_engagement(target_user_id, 'vip_subscribed')
+            
+            asyncio.create_task(self.send_push_to_users(
+                [target_user_id], "VIP Approved! 🎉", "Restart app to access.",
+                data={'screen': 'Signals'}
+            ))
             try:
-                asyncio.create_task(self.send_push_to_users(
-                    [user_id],
-                    "VIP Request Approved! 🎉",
-                    "You now have access to premium signals. Restart the app to see changes.",
-                    data={'screen': 'Signals', 'initialTab': 'vip'}
-                ))
-            except Exception as e:
-                logger.error(f"Failed to send push notification for VIP approval: {e}")
-        
-            approved_text = f"\n\n--- ✅ Approved by {query.from_user.first_name or admin_id} ---"
+                await context.bot.send_message(target_user_id, "🎉 Your VIP request has been approved!")
+            except: pass
+
+            admin_name = query.from_user.first_name
+            original_caption = query.message.caption or query.message.text
+            new_text = f"{original_caption}\n\n✅ <b>Approved by {admin_name}</b>"
             
             if query.message.caption:
-                await query.edit_message_caption(caption=f"{query.message.caption}{approved_text}")
+                await query.edit_message_caption(caption=new_text, parse_mode=ParseMode.HTML)
             else:
-                await query.edit_message_text(f"{query.message.text}{approved_text}")
-
-            try:
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text="Congratulations! Your VIP request has been approved. You are now a subscriber."
-                )
-            except Exception as e:
-                logger.error(f"Failed to notify user {user_id} of approval: {e}")
-            
-            return ConversationHandler.END
+                await query.edit_message_text(text=new_text, parse_mode=ParseMode.HTML)
 
         elif action == "decline":
-            context.user_data['user_to_decline'] = user_id
-            context.user_data['admin_name'] = query.from_user.first_name or admin_id
+            force_text = f"✍️ <b>Reason for declining User {target_user_id}?</b>\n\nReply to this message with the reason."
             
-            if query.message.caption:
-                context.user_data['original_message_text'] = query.message.caption
-            else:
-                context.user_data['original_message_text'] = query.message.text
-            
-            context.user_data['original_message_id'] = query.message.message_id
-            context.user_data['is_photo_message'] = bool(query.message.photo)
-            
-            await query.edit_message_reply_markup(reply_markup=None)
-            await context.bot.send_message(chat_id=admin_id, text="Please enter the reason for declining this request.")
-            return WAITING_DECLINE_REASON
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=force_text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=ForceReply(selective=True) 
+            )
 
     async def receive_decline_reason(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Receives the decline reason from the admin and notifies the user."""
