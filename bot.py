@@ -6153,20 +6153,20 @@ class BroadcastBot:
             sent_count = 0
             for admin_id in self.super_admin_ids:
                 try:
-                await self.send_admin_notification(
-                    text=(
-                        f"🗑️ <b>Deletion Request</b>\n"
-                        f"User: {identifier}\n"
-                        f"Reason: {reason}\n\n"
-                        f"<i>Tap approve to schedule data wipe in 24 hours.</i>"
-                    ),
-                    reply_markup=reply_markup,
-                    fallback_admins=self.super_admin_ids
-                )
-                sent_count = 1 
-            except Exception as e:
-                logger.error(f"Failed to send deletion request: {e}")
-                sent_count = 0
+                    await self.send_admin_notification(
+                        text=(
+                            f"🗑️ <b>Deletion Request</b>\n"
+                            f"User: {identifier}\n"
+                            f"Reason: {reason}\n\n"
+                            f"<i>Tap approve to schedule data wipe in 24 hours.</i>"
+                        ),
+                        reply_markup=reply_markup,
+                        fallback_admins=self.super_admin_ids
+                    )
+                    sent_count = 1 
+                except Exception as e:
+                    logger.error(f"Failed to send deletion request: {e}")
+                    sent_count = 0
 
             if sent_count > 0:
                 return web.Response(text="<h1>Request Received</h1><p>Your request has been logged and sent to admins for approval. You will be notified on Telegram.</p>", content_type='text/html')
