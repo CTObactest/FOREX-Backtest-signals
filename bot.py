@@ -2545,6 +2545,47 @@ class SupportManager:
             await context.bot.send_message(chat_id=chat_id, text="⚠️ Only Admins can set this.")
             await context.bot.leave_chat(chat_id)
 
+    async def handle_app_message(self, context, user_id: int, content: str):
+        """Handles message sent from the Mobile App"""
+        support_group_id = self.db.get_support_group()
+        if not support_group_id:
+            return False, "Support unavailable"
+
+        user = self.db.users_collection.find_one({'user_id': user_id})
+        username = user.get('username', 'Unknown')
+        first_name = user.get('first_name', str(user_id))
+        is_vip = self.db.is_subscriber(user_id)
+        
+        vip_tag = "💎 VIP User" if is_vip else "👤 Free User"
+        
+        msg_entry = {
+            'user_id': user_id,
+            'sender': 'user',
+            'content': content,
+            'timestamp': time.time()
+        }
+        self.db.db['support_messages'].insert_one(msg_entry)
+
+        text_to_admin = (
+            f"📱 <b>App Support Request</b>\n"
+            f"From: {first_name} (@{username})\n"
+            f"Status: {vip_tag}\n"
+            f"ID: <code>{user_id}</code>\n\n"
+            f"Message: {content}"
+        )
+        
+        try:
+            sent_msg = await context.bot.send_message(
+                chat_id=support_group_id,
+                text=text_to_admin,
+                parse_mode='HTML'
+            )
+            self.db.save_support_mapping(sent_msg.message_id, user_id)
+            return True, "Sent"
+        except Exception as e:
+            logger.error(f"Failed to forward to support group: {e}")
+            return False, str(e)
+
     async def handle_user_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
         Forwards user DMs to the support group.
@@ -2587,8 +2628,8 @@ class SupportManager:
 
     async def handle_admin_reply(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
-        Handles replies sent by admins.
-        Reacts with ❤️ on success, 💔 on failure.
+        Handles Admin replying in the Telegram Support Group.
+        Saves the reply to the database so the App User sees it.
         """
         if update.message.reply_to_message and "Reason for declining" in update.message.reply_to_message.text:
             return
@@ -2613,20 +2654,28 @@ class SupportManager:
         
         if original_user_id:
             try:
-                await context.bot.copy_message(
-                    chat_id=original_user_id,
-                    from_chat_id=update.effective_chat.id,
-                    message_id=update.message.message_id
-                )
-                try: await update.message.set_reaction(reaction=[ReactionTypeEmoji("❤️")])
-                except: pass
+                admin_response = update.message.text or "[Media/Sticker]"
+
+                reply_entry = {
+                    'user_id': original_user_id,
+                    'sender': 'admin',
+                    'content': admin_response,
+                    'timestamp': time.time()
+                }
+                self.db.db['support_messages'].insert_one(reply_entry)
+
+                try: 
+                    await update.message.set_reaction(reaction=[ReactionTypeEmoji("❤️")])
+                except: 
+                    pass
+
 
             except Exception as e:
-                logger.error(f"Failed to send reply: {e}")
+                logger.error(f"Failed to process admin reply: {e}")
                 try: await update.message.set_reaction(reaction=[ReactionTypeEmoji("💔")])
                 except: pass
         else:
-            try: await update.message.set_reaction(reaction=[ReactionTypeEmoji("💔")])
+            try: await update.message.set_reaction(reaction=[ReactionTypeEmoji("❓")])
             except: pass
 
 class ReplyContainsFilter(filters.MessageFilter):
@@ -6423,6 +6472,55 @@ class BroadcastBot:
                 
                 return web.json_response({'error': 'Failed to fetch news'}, status=500)
 
+        async def api_support_send(request):
+            """API: User sends a message to support"""
+            try:
+                data = await request.json()
+                user_id = int(data.get('user_id'))
+                content = data.get('content')
+                
+                if not content: return web.json_response({'error': 'No content'}, status=400)
+
+                success, msg = await self.support_manager.handle_app_message(self.application, user_id, content)
+                
+                if success:
+                    return web.json_response({'success': True})
+                else:
+                    return web.json_response({'error': msg}, status=500)
+            except Exception as e:
+                return web.json_response({'error': str(e)}, status=500)
+
+        async def api_support_history(request):
+            """API: Get chat history"""
+            try:
+                user_id = int(request.match_info['user_id'])
+                cursor = self.db.db['support_messages'].find({'user_id': user_id}).sort('timestamp', 1)
+                messages = list(cursor)
+                for m in messages: m['_id'] = str(m['_id'])
+                return web.json_response(messages)
+            except Exception as e:
+                return web.json_response({'error': str(e)}, status=500)
+
+        async def api_support_end(request):
+            """API: End chat and delete history"""
+            try:
+                user_id = int(request.match_info['user_id'])
+                self.db.db['support_messages'].delete_many({'user_id': user_id})
+                
+                support_group = self.db.get_support_group()
+                if support_group:
+                    try:
+                        await self.application.bot.send_message(
+                            chat_id=support_group,
+                            text=f"🔴 <b>Chat Ended</b>\nUser {user_id} has closed the support session.",
+                            parse_mode='HTML'
+                        )
+                    except: pass
+
+                return web.json_response({'success': True})
+            except Exception as e:
+                return web.json_response({'error': str(e)}, status=500)
+
         async def api_calculate_position_size(request):
             """
             API Endpoint: Calculate Position Size
@@ -7237,6 +7335,9 @@ class BroadcastBot:
         app.router.add_post('/api/notifications/mark-read', api_mark_notification_read)
         app.router.add_post('/api/users/{user_id}/notifications/mark-all-read', api_mark_all_read)
         app.router.add_get('/api/users/{user_id}/notifications/unread-count', api_get_unread_count)
+        app.router.add_post('/api/support/message', api_support_send)
+        app.router.add_get('/api/support/history/{user_id}', api_support_history)
+        app.router.add_delete('/api/support/end/{user_id}', api_support_end)
         
         import aiohttp_cors
         cors = aiohttp_cors.setup(app, defaults={
@@ -8131,15 +8232,20 @@ class BroadcastBot:
         """Receive admin role and add admin"""
         query = update.callback_query
         await query.answer()
+        
+        role_str = query.data.replace("role_", "")
+        
+        try:
+            role = AdminRole(role_str)
+            user_id = context.user_data['new_admin_id']
 
-        role_str = query.data.split('_')[1]
-        role = AdminRole(f"{role_str}")
-        user_id = context.user_data['new_admin_id']
-
-        if self.db.add_admin(user_id, role, query.from_user.id):
-            await query.edit_message_text(f"✅ User {user_id} is now an admin with role '{role.value}'.")
-        else:
-            await query.edit_message_text(f"❌ Failed to add admin.")
+            if self.db.add_admin(user_id, role, query.from_user.id):
+                await query.edit_message_text(f"✅ User {user_id} is now an admin with role '{role.value}'.")
+            else:
+                await query.edit_message_text(f"❌ Failed to add admin.")
+        
+        except ValueError:
+            await query.edit_message_text(f"❌ Error: Invalid role '{role_str}'")
 
         return ConversationHandler.END
 
