@@ -2545,8 +2545,8 @@ class SupportManager:
             await context.bot.send_message(chat_id=chat_id, text="⚠️ Only Admins can set this.")
             await context.bot.leave_chat(chat_id)
 
-    async def handle_app_message(self, context, user_id: int, content: str):
-        """Handles message sent from the Mobile App"""
+    async def handle_app_message(self, context, user_id: int, content: str = None, image_data: bytes = None):
+        """Handles message sent FROM the Mobile App (Text or Image)"""
         support_group_id = self.db.get_support_group()
         if not support_group_id:
             return False, "Support unavailable"
@@ -2555,33 +2555,52 @@ class SupportManager:
         username = user.get('username', 'Unknown')
         first_name = user.get('first_name', str(user_id))
         is_vip = self.db.is_subscriber(user_id)
+        vip_tag = "💎 <b>VIP</b>" if is_vip else "👤 <b>Free</b>"
         
-        vip_tag = "💎 VIP User" if is_vip else "👤 Free User"
-        
-        msg_entry = {
-            'user_id': user_id,
-            'sender': 'user',
-            'content': content,
-            'timestamp': time.time()
-        }
-        self.db.db['support_messages'].insert_one(msg_entry)
-
-        text_to_admin = (
-            f"📱 <b>App Support Request</b>\n"
+        text_header = (
+            f"📱 <b>Support Request</b>\n"
             f"From: {first_name} (@{username})\n"
             f"Status: {vip_tag}\n"
             f"ID: <code>{user_id}</code>\n\n"
-            f"Message: {content}"
         )
         
+        full_caption = text_header + (f"💬 {content}" if content else "")
+
         try:
-            sent_msg = await context.bot.send_message(
-                chat_id=support_group_id,
-                text=text_to_admin,
-                parse_mode='HTML'
-            )
+            sent_msg = None
+            msg_type = 'text'
+            file_id = None
+
+            if image_data:
+                msg_type = 'photo'
+                import io
+                sent_msg = await context.bot.send_photo(
+                    chat_id=support_group_id,
+                    photo=io.BytesIO(image_data),
+                    caption=full_caption,
+                    parse_mode='HTML'
+                )
+                file_id = sent_msg.photo[-1].file_id
+            else:
+                sent_msg = await context.bot.send_message(
+                    chat_id=support_group_id,
+                    text=full_caption,
+                    parse_mode='HTML'
+                )
+
+            msg_entry = {
+                'user_id': user_id,
+                'sender': 'user',
+                'content': content,
+                'type': msg_type,
+                'file_id': file_id,
+                'timestamp': time.time()
+            }
+            self.db.db['support_messages'].insert_one(msg_entry)
+
             self.db.save_support_mapping(sent_msg.message_id, user_id)
             return True, "Sent"
+
         except Exception as e:
             logger.error(f"Failed to forward to support group: {e}")
             return False, str(e)
@@ -2627,24 +2646,18 @@ class SupportManager:
             await update.message.reply_text("❌ Error connecting to support.")
 
     async def handle_admin_reply(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """
-        Handles Admin replying in the Telegram Support Group.
-        Saves the reply to the database so the App User sees it.
-        """
+        """Handles Admin reply (Text or Photo)"""
         if update.message.reply_to_message and "Reason for declining" in update.message.reply_to_message.text:
             return
 
         support_group_id = self.db.get_support_group()
-        
         if update.effective_chat.id != support_group_id:
             return
 
         reply_to = update.message.reply_to_message
-        if not reply_to:
-            return
+        if not reply_to: return
 
         original_user_id = self.db.get_support_user_id(reply_to.message_id)
-
         if not original_user_id:
             forward_origin = getattr(reply_to, 'forward_origin', None)
             if forward_origin and forward_origin.type == 'user':
@@ -2654,29 +2667,32 @@ class SupportManager:
         
         if original_user_id:
             try:
-                admin_response = update.message.text or "[Media/Sticker]"
+                msg_type = 'text'
+                content = update.message.text
+                file_id = None
+
+                if update.message.photo:
+                    msg_type = 'photo'
+                    file_id = update.message.photo[-1].file_id
+                    content = update.message.caption or ""
 
                 reply_entry = {
                     'user_id': original_user_id,
                     'sender': 'admin',
-                    'content': admin_response,
+                    'content': content,
+                    'type': msg_type,
+                    'file_id': file_id,
                     'timestamp': time.time()
                 }
                 self.db.db['support_messages'].insert_one(reply_entry)
 
-                try: 
-                    await update.message.set_reaction(reaction=[ReactionTypeEmoji("❤️")])
-                except: 
-                    pass
-
+                try: await update.message.set_reaction(reaction=[ReactionTypeEmoji("❤️")])
+                except: pass
 
             except Exception as e:
                 logger.error(f"Failed to process admin reply: {e}")
                 try: await update.message.set_reaction(reaction=[ReactionTypeEmoji("💔")])
                 except: pass
-        else:
-            try: await update.message.set_reaction(reaction=[ReactionTypeEmoji("❓")])
-            except: pass
 
 class ReplyContainsFilter(filters.MessageFilter):
     """
@@ -6473,15 +6489,39 @@ class BroadcastBot:
                 return web.json_response({'error': 'Failed to fetch news'}, status=500)
 
         async def api_support_send(request):
-            """API: User sends a message to support"""
+            """API: User sends message (Multipart for images)"""
             try:
-                data = await request.json()
-                user_id = int(data.get('user_id'))
-                content = data.get('content')
-                
-                if not content: return web.json_response({'error': 'No content'}, status=400)
+                user_id = None
+                content = None
+                image_data = None
 
-                success, msg = await self.support_manager.handle_app_message(self.application, user_id, content)
+                if request.content_type.startswith('multipart/'):
+                    reader = await request.multipart()
+                    while True:
+                        field = await reader.next()
+                        if field is None: break
+                        
+                        if field.name == 'user_id':
+                            val = await field.read(decode=True)
+                            try: user_id = int(val.decode('utf-8'))
+                            except: pass
+                        elif field.name == 'content':
+                            val = await field.read(decode=True)
+                            content = val.decode('utf-8')
+                        elif field.name == 'image':
+                            image_data = await field.read(decode=False)
+                
+                elif request.content_type == 'application/json':
+                    data = await request.json()
+                    user_id = int(data.get('user_id'))
+                    content = data.get('content')
+
+                if not user_id:
+                    return web.json_response({'error': 'User ID required'}, status=400)
+
+                success, msg = await self.support_manager.handle_app_message(
+                    self.application, user_id, content, image_data
+                )
                 
                 if success:
                     return web.json_response({'success': True})
