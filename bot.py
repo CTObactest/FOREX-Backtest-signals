@@ -2648,6 +2648,7 @@ class SupportManager:
     async def handle_admin_reply(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handles Admin reply (Text or Photo)"""
         reply_to = update.message.reply_to_message
+        
         if reply_to and reply_to.text and "Reason for declining" in reply_to.text:
             return
 
@@ -2686,10 +2687,17 @@ class SupportManager:
                 }
                 self.db.db['support_messages'].insert_one(reply_entry)
 
-                if msg_type == 'text':
-                    await context.bot.send_message(chat_id=original_user_id, text=content)
-                elif msg_type == 'photo':
-                    await context.bot.send_photo(chat_id=original_user_id, photo=file_id, caption=content)
+                is_app_origin = False
+                if reply_to.from_user.id == context.bot.id:
+                    check_text = reply_to.caption or reply_to.text or ""
+                    if "Support Request" in check_text:
+                        is_app_origin = True
+
+                if not is_app_origin:
+                    if msg_type == 'text':
+                        await context.bot.send_message(chat_id=original_user_id, text=content)
+                    elif msg_type == 'photo':
+                        await context.bot.send_photo(chat_id=original_user_id, photo=file_id, caption=content)
 
                 try: await update.message.set_reaction(reaction=[ReactionTypeEmoji("❤️")])
                 except: pass
