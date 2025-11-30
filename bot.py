@@ -2647,15 +2647,15 @@ class SupportManager:
 
     async def handle_admin_reply(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handles Admin reply (Text or Photo)"""
-        if update.message.reply_to_message and "Reason for declining" in update.message.reply_to_message.text:
+        reply = update.message.reply_to_message
+        if reply and reply.text and "Reason for declining" in reply.text:
             return
 
         support_group_id = self.db.get_support_group()
         if update.effective_chat.id != support_group_id:
             return
 
-        reply_to = update.message.reply_to_message
-        if not reply_to: return
+        if not reply: return
 
         original_user_id = self.db.get_support_user_id(reply_to.message_id)
         if not original_user_id:
@@ -3205,9 +3205,8 @@ class BroadcastBot:
             )
 
     async def receive_signal_rating_v2(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Stateless signal rating handler."""
+        """Stateless signal rating handler with Idempotency check."""
         query = update.callback_query
-        await query.answer()
         
         parts = query.data.split('_')
         rating = int(parts[2])
@@ -3215,8 +3214,26 @@ class BroadcastBot:
 
         suggestion = self.db.get_suggestion_by_id(suggestion_id)
         if not suggestion:
-            await query.edit_message_caption("❌ Error: Signal not found")
+            await query.answer("❌ Error: Signal not found", show_alert=True)
             return
+
+        if suggestion.get('status') == 'approved':
+            await query.answer("⚠️ This signal is already approved!", show_alert=True)
+            try:
+                original_caption = query.message.caption
+                if "Approved" not in original_caption:
+                    await query.edit_message_caption(
+                        caption=f"{original_caption}\n\n✅ <b>Approved ({suggestion.get('rating')}⭐)</b>",
+                        reply_markup=None,
+                        parse_mode=ParseMode.HTML
+                    )
+                else:
+                    await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+            return
+
+        await query.answer()
 
         self.db.update_suggestion_status(suggestion_id, 'approved', query.from_user.id, rating=rating)
         self.admin_duty_manager.credit_duty_for_action(query.from_user.id, 'signal_approved')
